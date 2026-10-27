@@ -147,6 +147,7 @@ you fine-tune it.
 | `1`–`8` | Tap track (record / stop / stop layer / mute toggle) |
 | `⌥`+`1`–`8` | Start / finish a layer (overdub) |
 | `⌘Z` / `⇧⌘Z` | Undo / redo the last layer |
+| `⌘E` | Export audio (stems / mix) |
 | `Shift`+`1`–`8` | Clear track |
 | `Space` | Play / stop transport |
 | `M` | Metronome click on/off |
@@ -220,6 +221,24 @@ exactly in time on a 48 kHz interface: the engine resamples each loop to
 into the loop. Files are written to `*.tmp` and renamed, so a crash never
 leaves a half-written session. The WAV reader also accepts 16/24/32-bit PCM
 and stereo files (mixed to mono), which is the basis for importing samples.
+
+### Exporting audio
+
+**Export audio…** (sessions browser, or `⌘E`) writes WAV files into a folder
+the user picks, inside a new sub-folder named `<session> - <BPM> BPM`
+(never overwriting an earlier export):
+
+* **Stems** — `01 Track 1.wav`, … one per track at its volume.
+* **Mix** — `Mix.wav`, all tracks summed as you hear them.
+* Muted tracks are left out unless asked for.
+
+Every file starts at bar 1 and has the same length, so they line up when
+dropped into a DAW. The default length is the least common multiple of the
+loop lengths — the shortest span after which every loop ends on a full
+cycle (a 3-bar and a 4-bar loop give 12 bars) — falling back to the longest
+loop when that would exceed 64 bars. Files are 32-bit float (no clipping
+in the mix) at the session's sample rate; rendering runs in a background
+isolate.
 
 ### Threading
 

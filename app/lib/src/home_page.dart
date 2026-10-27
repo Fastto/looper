@@ -7,6 +7,7 @@ import 'package:looper_engine/looper_engine.dart';
 
 import 'looper_controller.dart';
 import 'theme.dart';
+import 'widgets/export_dialog.dart';
 import 'widgets/sessions_sheet.dart';
 import 'widgets/settings_sheet.dart';
 import 'widgets/track_card.dart';
@@ -61,6 +62,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     super.dispose();
   }
 
+  Future<void> _openExport() async {
+    await showExportDialog(context, _c);
+    _focus.requestFocus();
+  }
+
   // Physical keys so shortcuts work with any keyboard layout (e.g. Ukrainian).
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
@@ -75,6 +81,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       } else {
         _c.tapTrack(track);
       }
+      return KeyEventResult.handled;
+    }
+    if (key == PhysicalKeyboardKey.keyE && (keyboard.isMetaPressed || keyboard.isControlPressed)) {
+      _openExport();
       return KeyEventResult.handled;
     }
     if (key == PhysicalKeyboardKey.keyZ && (keyboard.isMetaPressed || keyboard.isControlPressed)) {
@@ -115,7 +125,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                     _focus.requestFocus();
                   },
                   onOpenSessions: () async {
-                    await showSessionsSheet(context, _c.sessions);
+                    final export = await showSessionsSheet(context, _c.sessions);
+                    if (export == true && context.mounted) await showExportDialog(context, _c);
                     _focus.requestFocus();
                   },
                 ),
@@ -197,7 +208,7 @@ class _HintBar extends StatelessWidget {
     return const Padding(
       padding: EdgeInsets.only(bottom: 6),
       child: Text(
-        '1–8 record / stop / mute   ·   ⌥1–8 layer   ·   ⌘Z / ⇧⌘Z undo / redo   ·   '
+        '1–8 record / stop / mute   ·   ⌥1–8 layer   ·   ⌘Z / ⇧⌘Z undo / redo   ·   ⌘E export   ·   '
         'Shift+1–8 clear   ·   Space play/stop   ·   M click   ·   T tap tempo',
         style: TextStyle(fontSize: 12, color: LooperColors.textSecondary),
       ),

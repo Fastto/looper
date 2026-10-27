@@ -5,9 +5,10 @@ import '../session/session.dart';
 import '../session/session_manager.dart';
 import '../theme.dart';
 
-Future<void> showSessionsSheet(BuildContext context, SessionManager sessions) {
+/// Returns true when the user asked to export audio.
+Future<bool?> showSessionsSheet(BuildContext context, SessionManager sessions) {
   sessions.refreshList();
-  return showModalBottomSheet(
+  return showModalBottomSheet<bool>(
     context: context,
     isScrollControlled: true,
     backgroundColor: LooperColors.surface,
@@ -129,6 +130,11 @@ class _SessionsSheetState extends State<SessionsSheet> {
                   onPressed: s.onDisk ? () => _run(context, s.duplicate) : null,
                   icon: const Icon(Icons.copy),
                   label: const Text('Duplicate'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => Navigator.pop(context, true),
+                  icon: const Icon(Icons.ios_share),
+                  label: const Text('Export audio…'),
                 ),
               ],
             ),

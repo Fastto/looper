@@ -25,12 +25,13 @@ instrument, and layer loops that are always in time.
 | Undo / redo arrows | Remove / restore the last layer of that track |
 | Bin icon | Clear the track |
 | Folder button (top bar) | Sessions: rename, new, duplicate, open, delete |
+| **Export audio…** (or `⌘E`) | Stems and a mix as WAV, aligned from bar 1, into a folder you choose |
 
 Everything is **saved automatically** (WAV + JSON) and the last session
 reopens when you start the app — there is no Save button to forget.
 
 Keyboard: `1`–`8` tap track · `⌥`+`1`–`8` layer (overdub) · `⌘Z` / `⇧⌘Z`
-undo / redo layer · `Shift`+`1`–`8` clear · `Space` play/stop · `M` click
+undo / redo layer · `⌘E` export · `Shift`+`1`–`8` clear · `Space` play/stop · `M` click
 on/off · `T` tap tempo.
 
 Tempo and time signature are locked while any track holds audio.

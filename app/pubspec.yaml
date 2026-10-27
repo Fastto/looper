@@ -1,12 +1,13 @@
 name: looper
 description: "Open-source live looper: record, layer and play loops in time."
 publish_to: 'none'
-version: 0.3.0
+version: 0.4.0
 
 environment:
   sdk: ^3.10.8
 
 dependencies:
+  file_selector: ^1.1.0
   flutter:
     sdk: flutter
   looper_engine:

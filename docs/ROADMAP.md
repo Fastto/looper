@@ -18,7 +18,7 @@
 
 ## v0.3 — sessions
 - [x] Sessions saved automatically (WAV + JSON), reopened on launch, sessions browser
-- [ ] Export stems and mixdown to a user-chosen folder
+- [x] Export stems and mixdown to a user-chosen folder
 - [ ] Import samples
 - [ ] Free-tempo mode: the first loop sets the tempo
 - [ ] Tempo change with time-stretching

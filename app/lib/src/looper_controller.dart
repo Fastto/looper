@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:looper_engine/looper_engine.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'export/audio_export.dart';
 import 'session/session.dart';
 import 'session/session_manager.dart';
 
@@ -145,6 +146,39 @@ class LooperController extends ChangeNotifier {
     while (_engine.commandsPending > 0 && DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(const Duration(milliseconds: 5));
     }
+  }
+
+  /// Loop lengths of the playing tracks, in half-bars (export length hints).
+  Map<int, int> loopHalfBars({bool includeMuted = true}) {
+    final halfBar = status.barFrames ~/ 2;
+    return {
+      for (var i = 0; i < maxTracks; i++)
+        if (status.tracks[i].state == TrackState.playing &&
+            (includeMuted || !status.tracks[i].muted) &&
+            halfBar > 0)
+          i: (status.tracks[i].length / halfBar).round(),
+    };
+  }
+
+  /// The audible loops, one cycle each, waiting briefly for tracks that are
+  /// still being recorded into or merged.
+  Future<List<ExportLoop>> collectLoops({required bool includeMuted}) async {
+    final loops = <ExportLoop>[];
+    for (var i = 0; i < maxTracks; i++) {
+      final deadline = DateTime.now().add(const Duration(seconds: 4));
+      while (true) {
+        final t = _engine.status().tracks[i];
+        if (t.state == TrackState.empty || (t.muted && !includeMuted)) break;
+        final audio = t.state == TrackState.playing ? _engine.trackExport(i) : null;
+        if (audio != null) {
+          if (audio.isNotEmpty) loops.add(ExportLoop(track: i, audio: audio, gain: tracks[i].volume));
+          break;
+        }
+        if (DateTime.now().isAfter(deadline)) break;
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+    }
+    return loops;
   }
 
   /// Stops, clears every track and applies session-level settings.

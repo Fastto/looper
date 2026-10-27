@@ -5,6 +5,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:looper/src/export/audio_export.dart';
 import 'package:looper/src/looper_controller.dart';
 import 'package:looper/src/session/wav.dart';
 import 'package:looper_engine/looper_engine.dart';
@@ -74,6 +75,28 @@ void main() {
       expect(c.tracks[0].volume, closeTo(0.7, 1e-9));
       expect(c.engine.trackExport(0), original);
       expect((await c.sessions.store.list()).length, 1); // the empty session was never written
+
+      // Export: two cycles of the loop as a stem and a mix.
+      final loops = await c.collectLoops(includeMuted: false);
+      expect(loops.single.track, 0);
+      final result = await runExport(
+        ExportJob(
+          folder: root.path,
+          title: 'export',
+          sampleRate: c.status.sampleRate,
+          frames: 2 * bar,
+          loops: loops,
+          stems: true,
+          mix: true,
+        ),
+      );
+      expect(result.files.map((f) => f.split('/').last), ['01 Track 1.wav', 'Mix.wav']);
+      final stem = decodeWav(await File(result.files.first).readAsBytes());
+      expect(stem.samples.length, 2 * bar);
+      for (final i in [0, bar ~/ 3, bar - 1]) {
+        expect(stem.samples[i], closeTo(original[i] * 0.7, 1e-6));
+        expect(stem.samples[bar + i], closeTo(original[i] * 0.7, 1e-6));
+      }
     });
   });
 }
