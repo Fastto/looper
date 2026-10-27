@@ -98,7 +98,7 @@ new features: nothing may switch audio on or off in a single sample.
 | Clear a playing track | 10 ms fade-out, then clear |
 | Mute / unmute, volume, undo / redo layer | 5 ms one-pole smoothing |
 | Overdub punch-in / punch-out | 4 ms fades on the recorded layer |
-| Software monitoring on / off (arm, take end, toggle) | 5 ms per input channel |
+| Input monitoring on / off (mode change, arm, take end) | 5 ms per input channel |
 | Click mute / volume | 5 ms smoothing |
 | Audio device change, quit | the app stops (with its fade) and waits before closing the device |
 
@@ -113,9 +113,17 @@ Trim fixes both, on the waveform of each track:
 
 | Control | Effect |
 |---------|--------|
-| left `‹` / `›` | Start the loop one step earlier / later. The length stays; the loop's new start plays on the downbeat. Past the end of the recording it is padded with silence. |
-| step chip (`⅛` / `¼` / `bar`) | Step for the left pair (eighth note, quarter note, whole bar) |
+| left `‹` / `›`, step `bar` | Add / cut a bar at the start. **The music stays where it was played** — only the loop's boundary moves (the loop now begins on the next bar). |
+| left `‹` / `›`, step `⅛` / `¼` | Nudge the timing: the music moves later / earlier against the grid by that much. The length stays; past the end of the recording it is padded with silence. |
+| step chip (`⅛` / `¼` / `bar`) | Step for the left pair |
 | right `‹` / `›` | Remove / add back a whole bar at the end (only for loops of 2+ bars) |
+| `↺` | Undo all trimming: back to the take exactly as recorded |
+
+Every loop remembers the transport bar its take started on (its anchor),
+so loops recorded from different bars keep the relation you played them
+in — also after reopening a session (`anchorBars`). Cutting bars at the
+start moves that anchor along with the boundary; only the ⅛ / ¼ nudge
+shifts the music against the other loops.
 
 Loop lengths stay whole bars, so trimmed loops never drift against the
 others (no polymeter). Nothing is destroyed: the loop is a **window over the
@@ -129,10 +137,22 @@ The first layer **locks the trim**: layers are recorded against the loop
 cycle as it is, so moving the window afterwards would split them at the
 seam. On locking, the seam crossfade is baked into the audio and the
 window is fixed. Sessions store the whole recording plus the window
-(`trim: {originBars, eighths}`), so an untouched loop can still be trimmed
-after reopening.
+(`trim: {originBars, eighths, startBars, recordedHalfBars}`), so an
+untouched loop can still be trimmed — or reset — after reopening.
 
-### 3.6 Normalize
+### 3.6 Hearing yourself (input monitoring)
+
+The top bar has one button per input of the interface (`In 1`, `In 2`, …)
+with its level meter. Clicking cycles how that input is heard through the
+app: **Off** → **On** (always — play along with the loops without
+recording) → **Auto** (only while a track on that input is armed, recording
+or layering). The arrow sets its monitoring level. Monitoring is per input,
+not per track, because one input can feed several tracks; a headphone icon
+next to a track's input shows when that input is being heard. Through the
+app you hear yourself one round trip late (shown in the tooltip); a smaller
+buffer helps, and an interface's own direct monitoring has no delay.
+
+### 3.7 Normalize
 
 The `N` button next to a track's volume brings the loop's loudest peak to
 −1 dBFS. It is non-destructive: the engine applies a separate
@@ -143,7 +163,7 @@ a silent loop is left alone. Layers are included in the peak; after
 layering, press it twice to re-normalize. A new take or clearing the track
 resets it; sessions and exports keep it.
 
-### 3.7 Overdub and undo
+### 3.8 Overdub and undo
 
 Overdub ("Layer") records on top of a playing loop. Unlike the first
 recording it is **not quantized**: it punches in and out the moment you

@@ -40,7 +40,8 @@ class SessionManager extends ChangeNotifier {
   final List<int> _savedLength = List.filled(maxTracks, 0);
   // How each saved track was written: null = the loop itself (locked trim),
   // otherwise the whole recording and its window.
-  final List<({double originBars, int eighths})?> _savedTrim = List.filled(maxTracks, null);
+  final List<_SavedTrim?> _savedTrim = List.filled(maxTracks, null);
+  final List<int> _savedAnchorBars = List.filled(maxTracks, 0);
   String? _savedMeta;
   Timer? _debounce;
   bool _saving = false;
@@ -120,7 +121,14 @@ class SessionManager extends ChangeNotifier {
         try {
           final wav = await store.readTrack(sessionId, t.file!);
           int import() {
-            if (t.locked) return _c.engine.trackImport(i, wav.samples, t.halfBars * halfBar);
+            if (t.locked) {
+              return _c.engine.trackImport(
+                i,
+                wav.samples,
+                t.halfBars * halfBar,
+                anchor: t.anchorBars * 2 * halfBar,
+              );
+            }
             // A whole recording: scale it to the current bar length (sample
             // rate may differ) and restore its window.
             final bar = 2 * halfBar;
@@ -132,7 +140,10 @@ class SessionManager extends ChangeNotifier {
               locked: false,
               origin: (t.originBars * bar).round(),
               trimEighths: t.trimEighths,
+              startBars: t.startBars,
               length: t.halfBars * halfBar,
+              anchor: t.anchorBars * bar,
+              recLength: t.recordedHalfBars * halfBar,
             );
           }
 
@@ -232,8 +243,9 @@ class SessionManager extends ChangeNotifier {
       _savedAudio[i] = _audioSignature(t);
       _savedLength[i] = t.state == TrackState.playing ? t.length : 0;
       _savedTrim[i] = t.state == TrackState.playing && !t.trimLocked
-          ? (originBars: t.origin / status.barFrames, eighths: t.trimEighths)
+          ? _SavedTrim.of(t, status.barFrames)
           : null;
+      _savedAnchorBars[i] = t.state == TrackState.playing ? _anchorBars(t, status.barFrames) : 0;
     }
     _existsOnDisk = onDisk;
     _savedMeta = _existsOnDisk ? _metaKey(_manifest(status)) : null;
@@ -298,9 +310,8 @@ class SessionManager extends ChangeNotifier {
         await store.writeTrack(sessionId, i, audio, status.sampleRate);
         _savedAudio[i] = signature;
         _savedLength[i] = t.length;
-        _savedTrim[i] = t.trimLocked
-            ? null
-            : (originBars: t.origin / status.barFrames, eighths: t.trimEighths);
+        _savedTrim[i] = t.trimLocked ? null : _SavedTrim.of(t, status.barFrames);
+        _savedAnchorBars[i] = _anchorBars(t, status.barFrames);
         wrote = true;
       }
 
@@ -345,6 +356,9 @@ class SessionManager extends ChangeNotifier {
             locked: _savedTrim[i] == null,
             originBars: _savedTrim[i]?.originBars ?? 0,
             trimEighths: _savedTrim[i]?.eighths ?? 0,
+            startBars: _savedTrim[i]?.startBars ?? 0,
+            recordedHalfBars: _savedTrim[i]?.recordedHalfBars ?? 0,
+            anchorBars: _savedAnchorBars[i],
             volume: _c.tracks[i].volume,
             pan: _c.tracks[i].pan,
             normGain: _savedAudio[i] != null ? status.tracks[i].normGain : 1,
@@ -367,3 +381,29 @@ class SessionManager extends ChangeNotifier {
 /// Bar length in frames, rounded to even exactly as the engine does.
 int barFramesFor(int sampleRate, double bpm, int beatsPerBar) =>
     (sampleRate * 60 / bpm * beatsPerBar / 2).round() * 2;
+
+/// The anchor bar to save: the take's own downbeat while the trim is open
+/// (start-bar cuts are stored separately), the playing anchor once locked.
+int _anchorBars(TrackStatus t, int bar) => ((t.trimLocked ? t.recStart : t.recAnchor) / bar).round();
+
+/// How an open-trim track was saved: the window over its recording.
+class _SavedTrim {
+  const _SavedTrim({
+    required this.originBars,
+    required this.eighths,
+    required this.startBars,
+    required this.recordedHalfBars,
+  });
+
+  factory _SavedTrim.of(TrackStatus t, int bar) => _SavedTrim(
+    originBars: t.origin / bar,
+    eighths: t.trimEighths,
+    startBars: t.startBars,
+    recordedHalfBars: (t.recLength / (bar / 2)).round(),
+  );
+
+  final double originBars;
+  final int eighths;
+  final int startBars;
+  final int recordedHalfBars;
+}

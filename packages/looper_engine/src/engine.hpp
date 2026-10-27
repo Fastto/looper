@@ -30,9 +30,12 @@ enum class CommandType : uint8_t {
   TrackLengthMode,
   TrackLoad,  // audio was written by importLoop(); d = length, a/b/c = origin/end/trim, i = locked
   TrackShiftStart,
+  TrackShiftStartBars,
   TrackTrimBars,
+  TrackResetTrim,
   TrackPan,
   TrackNormGain,
+  SetInputMonitor,
   SetMuteQuantize,
   SetFeedback,
   CalibrationStart,
@@ -46,6 +49,9 @@ struct Command {
   int64_t a = 0;
   int64_t b = 0;
   int64_t c = 0;
+  int64_t e = 0;
+  int64_t f = 0;
+  int64_t g = 0;
 };
 
 struct EngineConfig {
@@ -84,7 +90,8 @@ class Engine {
 
   // UI thread: loads audio into an empty track. 0 = ok, -1 busy, -2 bad length.
   int importLoop(int track, const float* data, int64_t frames, int64_t targetFrames,
-                 bool locked = true, int64_t origin = 0, int trimEighths = 0, int64_t length = 0);
+                 bool locked = true, int64_t origin = 0, int trimEighths = 0, int64_t length = 0,
+                 int64_t anchor = 0, int64_t recLength = 0, int startBars = 0);
 
   // UI thread: result of the last calibration (see looper_calibrate_result).
   int calibrationResult(int32_t* frames);
@@ -129,11 +136,19 @@ class Engine {
     int64_t origin = 0;
     int64_t audioEnd = 0;
     int64_t windowStart = 0;
-    int trimEighths = 0;
+    int trimEighths = 0;  // timing nudge: moves the music against the grid
+    int startBars = 0;    // whole bars cut at the start: the music stays put
+    // Where the take's downbeat was on the transport, and its length as
+    // recorded. The start boundary (startBars) moves the playback anchor
+    // (recStart) with the window, so the music stays where it was played;
+    // the nudge (trimEighths) moves only the window.
+    int64_t recAnchor = 0;
+    int64_t recLength = 0;
     bool trimLocked = false;
     // Crossfade from the previous window after a trim while playing.
     int64_t prevStart = 0;
     int64_t prevLength = 0;
+    int64_t prevAnchor = 0;
     int windowFadeLeft = 0;
     // Short envelopes so a loop never starts or vanishes with a jump.
     int fadeInLeft = 0;     // frames left of the start fade-in
@@ -196,9 +211,17 @@ class Engine {
   int64_t eighthsToFrames(int eighths) const;
   float baseAt(const Track& t, int64_t i) const;
   float renderBase(const Track& t, int64_t start, int64_t length, int64_t pos) const;
-  void setWindow(Track& t, int64_t start, int64_t length);
+  void setWindow(Track& t, int64_t start, int64_t length, int64_t anchor);
+  int64_t anchorFor(const Track& t, int startBars) const;
+  bool canTrim(const Track& t) const;
   void lockTrim(Track& t);
-  void trimLimits(const Track& t, int& minEighths, int& maxEighths, int& maxBars) const;
+  struct TrimLimits {
+    int minEighths, maxEighths;  // nudge
+    int minStartBars, maxStartBars;
+    int maxBars;  // length; 0 = can't change
+  };
+  TrimLimits trimLimits(const Track& t) const;
+  int64_t windowStartFor(const Track& t, int startBars, int eighths) const;
   int64_t windowChunks(const Track& t) const;
   int64_t headroom() const;
   float metronomeSample();
@@ -232,7 +255,8 @@ class Engine {
   int64_t tolerance_ = 0;
   int countInBars_ = 1;
   int64_t latency_ = 0;
-  bool monitoring_ = false;
+  int monitorMode_[kMaxInputs] = {};  // LooperMonitorMode per input
+  float monitorVolume_[kMaxInputs];
 
   // metronome
   bool metronomeOn_ = true;

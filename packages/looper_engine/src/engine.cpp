@@ -49,6 +49,7 @@ Engine::Engine(const EngineConfig& config) : config_(config) {
   const int usableInputs = std::min(config_.inputChannels, kMaxInputs);
   history_.assign(historySize_ * static_cast<size_t>(std::max(usableInputs, 1)), 0.0f);
 
+  for (auto& v : monitorVolume_) v = 1.0f;
   stopFadeFrames_ = std::max(1, static_cast<int>(std::lround(kStopFadeSeconds * sr)));
   startFadeFrames_ = std::max(1, static_cast<int>(std::lround(kStartFadeSeconds * sr)));
 
@@ -107,7 +108,13 @@ void Engine::handle(const Command& cmd) {
       metronomeVolume_ = std::clamp(static_cast<float>(cmd.d), 0.0f, 1.0f);
       break;
     case CommandType::SetMonitoring:
-      monitoring_ = cmd.i != 0;
+      for (auto& mode : monitorMode_) mode = cmd.i != 0 ? LOOPER_MONITOR_AUTO : LOOPER_MONITOR_OFF;
+      break;
+    case CommandType::SetInputMonitor:
+      if (cmd.track >= 0 && cmd.track < kMaxInputs) {
+        monitorMode_[cmd.track] = std::clamp(cmd.i, 0, 2);
+        monitorVolume_[cmd.track] = std::clamp(static_cast<float>(cmd.d), 0.0f, 2.0f);
+      }
       break;
     case CommandType::SetCountIn:
       countInBars_ = std::clamp(cmd.i, 0, 4);
@@ -137,37 +144,55 @@ void Engine::handle(const Command& cmd) {
       if (t && t->state == LOOPER_TRACK_EMPTY && length > 0) {
         resetLayer(*t);
         t->writing = false;
-        t->recStart = 0;  // every loop is anchored to bar 1
-        t->recEnd = length;
         t->length = length;
         t->origin = cmd.a;
         t->audioEnd = cmd.b;
         t->trimEighths = static_cast<int>(cmd.c);
-        t->windowStart = t->origin + eighthsToFrames(t->trimEighths);
+        t->startBars = static_cast<int>(cmd.g);
+        t->windowStart = windowStartFor(*t, t->startBars, t->trimEighths);
         t->trimLocked = cmd.i != 0;
+        t->recAnchor = cmd.e;
+        t->recStart = anchorFor(*t, t->startBars);
+        t->recEnd = t->recStart + length;
+        t->recLength = cmd.f > 0 ? cmd.f : length;
         t->windowFadeLeft = 0;
         beginPlaying(*t);
       }
       break;
     }
     case CommandType::TrackShiftStart:
-      if (t && t->state == LOOPER_TRACK_PLAYING && !t->trimLocked && !t->overdubbing) {
-        int minE = 0, maxE = 0, maxBars = 0;
-        trimLimits(*t, minE, maxE, maxBars);
+      if (t && canTrim(*t)) {
+        const TrimLimits lim = trimLimits(*t);
         const int target = t->trimEighths + cmd.i;
-        if (cmd.i != 0 && target >= minE && target <= maxE) {
+        if (cmd.i != 0 && target >= lim.minEighths && target <= lim.maxEighths) {
           t->trimEighths = target;
-          setWindow(*t, t->origin + eighthsToFrames(target), t->length);
+          setWindow(*t, windowStartFor(*t, t->startBars, target), t->length, t->recStart);
+        }
+      }
+      break;
+    case CommandType::TrackShiftStartBars:
+      if (t && canTrim(*t)) {
+        const TrimLimits lim = trimLimits(*t);
+        const int target = t->startBars + cmd.i;
+        if (cmd.i != 0 && target >= lim.minStartBars && target <= lim.maxStartBars) {
+          t->startBars = target;
+          setWindow(*t, windowStartFor(*t, target, t->trimEighths), t->length, anchorFor(*t, target));
         }
       }
       break;
     case CommandType::TrackTrimBars:
-      if (t && t->state == LOOPER_TRACK_PLAYING && !t->trimLocked && !t->overdubbing &&
-          t->length >= bar_ && t->length % bar_ == 0) {
-        int minE = 0, maxE = 0, maxBars = 0;
-        trimLimits(*t, minE, maxE, maxBars);
+      if (t && canTrim(*t) && t->length >= bar_ && t->length % bar_ == 0) {
         const int64_t bars = t->length / bar_ + cmd.i;
-        if (cmd.i != 0 && bars >= 1 && bars <= maxBars) setWindow(*t, t->windowStart, bars * bar_);
+        if (cmd.i != 0 && bars >= 1 && bars <= trimLimits(*t).maxBars) {
+          setWindow(*t, t->windowStart, bars * bar_, t->recStart);
+        }
+      }
+      break;
+    case CommandType::TrackResetTrim:
+      if (t && canTrim(*t)) {
+        t->trimEighths = 0;
+        t->startBars = 0;
+        setWindow(*t, t->origin, t->recLength > 0 ? t->recLength : t->length, t->recAnchor);
       }
       break;
     case CommandType::TrackUndo:
@@ -237,10 +262,13 @@ void Engine::tap(Track& t) {
       t.audioEnd = 0;
       t.windowStart = t.origin;
       t.trimEighths = 0;
+      t.startBars = 0;
       t.trimLocked = false;
       t.windowFadeLeft = 0;
       t.normGain = 1.0f;  // a new take starts un-normalized
       t.muted = false;
+      t.recAnchor = t.recStart;
+      t.recLength = 0;
       t.state = position_ >= t.recStart ? LOOPER_TRACK_RECORDING : LOOPER_TRACK_ARMED;
       break;
     }
@@ -308,6 +336,7 @@ void Engine::applyPendingMutes() {
 
 void Engine::beginPlaying(Track& t) {
   t.state = LOOPER_TRACK_PLAYING;
+  if (t.recLength <= 0) t.recLength = t.length;
   t.fadeInLeft = startFadeFrames_;
   t.gain = t.muted ? 0.0f : t.volume * t.normGain;
   t.uncommitted = windowChunks(t);
@@ -440,9 +469,12 @@ void Engine::clearTrack(Track& t) {
   t.audioEnd = 0;
   t.windowStart = 0;
   t.trimEighths = 0;
+  t.startBars = 0;
   t.trimLocked = false;
   t.windowFadeLeft = 0;
   t.normGain = 1.0f;
+  t.recAnchor = 0;
+  t.recLength = 0;
   resetLayer(t);
 }
 
@@ -572,17 +604,17 @@ void Engine::processFrame(const float* in, float* out) {
         const bool layerOn =
             t.layerState == LOOPER_LAYER_ACTIVE || t.layerState == LOOPER_LAYER_RECORDING;
         t.layerGain += ((layerOn ? 1.0f : 0.0f) - t.layerGain) * gainSmoothing_;
-        auto sampleAt = [&](int64_t start, int64_t length) {
-          const int64_t pos = floorMod(p - t.recStart, length);
+        auto sampleAt = [&](int64_t start, int64_t length, int64_t anchor) {
+          const int64_t pos = floorMod(p - anchor, length);
           const auto idx = static_cast<size_t>(start + pos);
           commitChunk(t, idx);
           return renderBase(t, start, length, pos) + t.layer[idx] * t.layerGain;
         };
-        float loopSample = sampleAt(t.windowStart, t.length);
+        float loopSample = sampleAt(t.windowStart, t.length, t.recStart);
         if (t.windowFadeLeft > 0) {
           // Trimmed while playing: crossfade from where the old window was.
           const float w = riseCurve(stopFadeFrames_ / 2 - t.windowFadeLeft + 1, stopFadeFrames_ / 2);
-          loopSample = sampleAt(t.prevStart, t.prevLength) * (1.0f - w) + loopSample * w;
+          loopSample = sampleAt(t.prevStart, t.prevLength, t.prevAnchor) * (1.0f - w) + loopSample * w;
           --t.windowFadeLeft;
         }
         float envelope = 1.0f;
@@ -611,7 +643,7 @@ void Engine::processFrame(const float* in, float* out) {
 
       const bool live = t.state == LOOPER_TRACK_ARMED || t.state == LOOPER_TRACK_RECORDING ||
                         t.overdubbing;
-      if (monitoring_ && live) monitoredChannels |= 1u << t.inputChannel;
+      if (live) monitoredChannels |= 1u << t.inputChannel;
     }
 
     if (newBeat) {
@@ -627,7 +659,9 @@ void Engine::processFrame(const float* in, float* out) {
 
   // Input monitoring fades in and out per channel instead of switching.
   for (int ch = 0; ch < usable; ++ch) {
-    const float target = (monitoredChannels & (1u << ch)) ? 1.0f : 0.0f;
+    const bool heard = monitorMode_[ch] == LOOPER_MONITOR_ON ||
+                       (monitorMode_[ch] == LOOPER_MONITOR_AUTO && (monitoredChannels & (1u << ch)));
+    const float target = heard ? monitorVolume_[ch] : 0.0f;
     monitorGain_[ch] += (target - monitorGain_[ch]) * gainSmoothing_;
     if (monitorGain_[ch] > 1e-5f) monitor += inputSample(ch) * monitorGain_[ch];
   }
@@ -726,16 +760,32 @@ float Engine::renderBase(const Track& t, int64_t start, int64_t length, int64_t 
   return s * std::cos(x * kHalfPi) + baseAt(t, start - fade + k) * std::sin(x * kHalfPi);
 }
 
-void Engine::setWindow(Track& t, int64_t start, int64_t length) {
+void Engine::setWindow(Track& t, int64_t start, int64_t length, int64_t anchor) {
   if (playing_ && t.state == LOOPER_TRACK_PLAYING) {
     t.prevStart = t.windowStart;
     t.prevLength = t.length;
+    t.prevAnchor = t.recStart;
     t.windowFadeLeft = std::max(1, stopFadeFrames_ / 2);
   }
   t.windowStart = start;
   t.length = length;
-  t.recEnd = t.recStart + length;
+  t.recStart = anchor;
+  t.recEnd = anchor + length;
   t.layerVersion += 1;
+}
+
+// Cutting bars at the start moves the anchor with the window, so the music
+// stays where it was played.
+int64_t Engine::anchorFor(const Track& t, int startBars) const {
+  return t.recAnchor + static_cast<int64_t>(startBars) * bar_;
+}
+
+int64_t Engine::windowStartFor(const Track& t, int startBars, int eighths) const {
+  return t.origin + static_cast<int64_t>(startBars) * bar_ + eighthsToFrames(eighths);
+}
+
+bool Engine::canTrim(const Track& t) const {
+  return t.state == LOOPER_TRACK_PLAYING && !t.trimLocked && !t.overdubbing && !t.writing;
 }
 
 // Layers are recorded against the current cycle, so the first one fixes the
@@ -756,29 +806,37 @@ void Engine::lockTrim(Track& t) {
   t.windowFadeLeft = 0;
 }
 
-void Engine::trimLimits(const Track& t, int& minEighths, int& maxEighths, int& maxBars) const {
-  const int64_t bars = t.length / bar_;
-  if (t.trimLocked || t.state != LOOPER_TRACK_PLAYING) {
-    minEighths = maxEighths = t.trimEighths;
-    maxBars = 0;
-    return;
-  }
-  // Start: anywhere from the beginning of the pre-roll to the last recorded frame.
+Engine::TrimLimits Engine::trimLimits(const Track& t) const {
+  TrimLimits lim{t.trimEighths, t.trimEighths, t.startBars, t.startBars, 0};
+  if (t.trimLocked || t.state != LOOPER_TRACK_PLAYING) return lim;
+  // The start may sit anywhere from the beginning of the pre-roll to the
+  // last recorded frame.
+  const int64_t last = t.audioEnd - 1;
+  auto inRange = [&](int bars, int eighths) {
+    const int64_t start = windowStartFor(t, bars, eighths);
+    return start >= 0 && start <= last;
+  };
   const double eighth = static_cast<double>(bar_) / (2.0 * beatsPerBar_);
-  minEighths = static_cast<int>(std::ceil(-static_cast<double>(t.origin) / eighth));
-  while (t.origin + eighthsToFrames(minEighths) < 0) ++minEighths;
-  maxEighths = static_cast<int>(std::floor(static_cast<double>(t.audioEnd - 1 - t.origin) / eighth));
-  while (maxEighths > minEighths && t.origin + eighthsToFrames(maxEighths) > t.audioEnd - 1) --maxEighths;
-  minEighths = std::min(minEighths, t.trimEighths);
-  maxEighths = std::max(maxEighths, t.trimEighths);
+  const int64_t barBase = t.origin + static_cast<int64_t>(t.startBars) * bar_;
+  lim.minEighths = static_cast<int>(std::ceil(-static_cast<double>(barBase) / eighth));
+  while (!inRange(t.startBars, lim.minEighths) && lim.minEighths < t.trimEighths) ++lim.minEighths;
+  lim.maxEighths = static_cast<int>(std::floor(static_cast<double>(last - barBase) / eighth));
+  while (!inRange(t.startBars, lim.maxEighths) && lim.maxEighths > t.trimEighths) --lim.maxEighths;
+  const int64_t nudgeBase = t.origin + eighthsToFrames(t.trimEighths);
+  lim.minStartBars = static_cast<int>(floorDiv(-nudgeBase + bar_ - 1, bar_));
+  lim.maxStartBars = static_cast<int>(floorDiv(last - nudgeBase, bar_));
+  lim.minEighths = std::min(lim.minEighths, t.trimEighths);
+  lim.maxEighths = std::max(lim.maxEighths, t.trimEighths);
+  lim.minStartBars = std::min(lim.minStartBars, t.startBars);
+  lim.maxStartBars = std::max(lim.maxStartBars, t.startBars);
   // Length: whole bars, up to what covers the recording (or the current length).
-  if (t.length < bar_ || t.length % bar_ != 0) {
-    maxBars = 0;
-    return;
+  if (t.length >= bar_ && t.length % bar_ == 0) {
+    const int64_t bars = t.length / bar_;
+    const int64_t cover = (std::max<int64_t>(t.audioEnd - t.windowStart, 0) + bar_ - 1) / bar_;
+    const int64_t fits = (static_cast<int64_t>(capacity_) - t.windowStart) / bar_;
+    lim.maxBars = static_cast<int>(std::min(std::max(bars, cover), std::max(bars, fits)));
   }
-  const int64_t cover = (std::max<int64_t>(t.audioEnd - t.windowStart, 0) + bar_ - 1) / bar_;
-  const int64_t fits = (static_cast<int64_t>(capacity_) - t.windowStart) / bar_;
-  maxBars = static_cast<int>(std::min(std::max(bars, cover), std::max(bars, fits)));
+  return lim;
 }
 
 int64_t Engine::windowChunks(const Track& t) const {
@@ -806,7 +864,12 @@ void Engine::publishStatus() {
   s.output_channels = config_.outputChannels;
   s.beats_per_bar = beatsPerBar_;
   s.metronome_on = metronomeOn_ ? 1 : 0;
-  s.monitoring_on = monitoring_ ? 1 : 0;
+  s.monitoring_on = 0;
+  for (int ch = 0; ch < kMaxInputs; ++ch) {
+    s.input_monitor_mode[ch] = monitorMode_[ch];
+    s.input_monitor_volume[ch] = monitorVolume_[ch];
+    if (monitorMode_[ch] != LOOPER_MONITOR_OFF) s.monitoring_on = 1;
+  }
   s.count_in_bars = countInBars_;
   s.latency_frames = static_cast<int32_t>(latency_);
   s.mute_quantize = muteQuantize_;
@@ -838,14 +901,18 @@ void Engine::publishStatus() {
     ts.pending_mute = t.pendingMute;
     ts.trim_locked = t.trimLocked ? 1 : 0;
     ts.trim_eighths = t.trimEighths;
-    int minE = 0, maxE = 0, maxBars = 0;
-    trimLimits(t, minE, maxE, maxBars);
-    ts.trim_min_eighths = minE;
-    ts.trim_max_eighths = maxE;
-    ts.trim_max_bars = maxBars;
+    const TrimLimits lim = trimLimits(t);
+    ts.trim_min_eighths = lim.minEighths;
+    ts.trim_max_eighths = lim.maxEighths;
+    ts.start_bars = t.startBars;
+    ts.start_bars_min = lim.minStartBars;
+    ts.start_bars_max = lim.maxStartBars;
+    ts.trim_max_bars = lim.maxBars;
     ts.origin = t.origin;
     ts.window_start = t.windowStart;
     ts.audio_end = t.audioEnd;
+    ts.rec_anchor = t.recAnchor;
+    ts.rec_length = t.recLength;
     ts.pan = t.pan;
     ts.norm_gain = t.normGain;
     ts.volume = t.volume;
@@ -953,15 +1020,17 @@ int Engine::calibrationResult(int32_t* frames) {
 }
 
 int Engine::importLoop(int track, const float* data, int64_t frames, int64_t targetFrames,
-                       bool locked, int64_t origin, int trimEighths, int64_t length) {
+                       bool locked, int64_t origin, int trimEighths, int64_t length,
+                       int64_t anchor, int64_t recLength, int startBars) {
   if (track < 0 || track >= kMaxTracks || !data || frames <= 0) return -2;
   if (targetFrames <= 0 || targetFrames > static_cast<int64_t>(capacity_)) return -2;
   if (locked) {
     origin = 0;
     trimEighths = 0;
+    startBars = 0;
     length = targetFrames;
   }
-  const int64_t start = origin + eighthsToFrames(trimEighths);
+  const int64_t start = origin + static_cast<int64_t>(startBars) * bar_ + eighthsToFrames(trimEighths);
   if (length <= 0 || origin < 0 || start < 0 || start >= targetFrames ||
       start + length > static_cast<int64_t>(capacity_)) {
     return -2;
@@ -995,6 +1064,9 @@ int Engine::importLoop(int track, const float* data, int64_t frames, int64_t tar
   cmd.a = origin;
   cmd.b = targetFrames;
   cmd.c = trimEighths;
+  cmd.e = anchor;
+  cmd.f = recLength;
+  cmd.g = startBars;
   return send(cmd) ? 0 : -1;
 }
 

@@ -904,6 +904,111 @@ void testNormGain() {
   CHECK(rig.status().tracks[0].norm_gain == 1.0f);
 }
 
+
+void testTrimKeepsMusicInPlace() {
+  std::printf("cutting bars at the start keeps the music where it was played; nudges move it; reset\n");
+  Rig rig;
+  rig.send(CommandType::Play);
+  rig.run(1, [](int64_t) { return 0.0f; });
+  const int64_t d0 = rig.deviceFrame - 1;
+  const int64_t eighth = kBar / 8;
+  // Recorded from bar 1 (transport 0): silent first bar, a hit on the bar-2
+  // downbeat and a softer one on the bar-4 downbeat; stopped in bar 5.
+  auto player = [&](int64_t d) {
+    const int64_t m = d - d0;
+    if (m == kBar) return 1.0f;
+    if (m == 3 * kBar) return 0.5f;
+    return 0.0f;
+  };
+  rig.send(CommandType::TrackTap, 0);
+  rig.run(4 * kBar + 1000 - rig.position(), player);
+  rig.send(CommandType::TrackTap, 0);
+  rig.run(5 * kBar + 10 - rig.position(), player);
+  CHECK(rig.status().tracks[0].length == 5 * kBar);
+  CHECK(rig.status().tracks[0].rec_anchor == 0);
+
+  // Where does the loud hit sound, over two cycles from `from`?
+  auto hitTimes = [&](int64_t from, int64_t cycle) {
+    rig.run(from + 2 * cycle - rig.position(), [](int64_t) { return 0.0f; });
+    std::vector<int64_t> times;
+    const int64_t first = rig.position() - 2 * cycle;
+    const size_t base = rig.out.size() - static_cast<size_t>(2 * cycle);
+    for (int64_t i = 0; i < 2 * cycle; ++i) {
+      if (rig.out[base + static_cast<size_t>(i)] > 0.9f) times.push_back(first + i);
+    }
+    return times;
+  };
+
+  // Cut the silent bar (start boundary +1 bar), then the empty last bar.
+  rig.send(CommandType::TrackShiftStartBars, 0, 1);
+  rig.send(CommandType::TrackTrimBars, 0, -1);
+  rig.run(10, [](int64_t) { return 0.0f; });
+  CHECK(rig.status().tracks[0].start_bars == 1);
+  CHECK(rig.status().tracks[0].length == 4 * kBar);
+  CHECK(rig.status().tracks[0].rec_start == kBar);  // the loop now begins on bar 2
+  // The hit still sounds on bar-2 downbeats of the 4-bar cycle: kBar mod 4 bars.
+  {
+    const auto hits = hitTimes(8 * kBar, 4 * kBar);
+    CHECK(hits.size() == 2);
+    for (int64_t t : hits) CHECK(floorMod(t, 4 * kBar) == kBar);
+  }
+  CHECK(hitTimes(16 * kBar, 4 * kBar).size() == 2);
+
+  // A nudge does move the music: start an eighth earlier = the hit an eighth later.
+  rig.send(CommandType::TrackShiftStart, 0, -1);
+  rig.run(10, [](int64_t) { return 0.0f; });
+  {
+    const auto hits = hitTimes(24 * kBar, 4 * kBar);
+    CHECK(hits.size() == 2);
+    for (int64_t t : hits) CHECK(floorMod(t, 4 * kBar) == kBar + eighth);
+  }
+  rig.send(CommandType::TrackResetTrim, 0);
+  rig.run(10, [](int64_t) { return 0.0f; });
+  const LooperTrackStatus& r = rig.status().tracks[0];
+  CHECK(r.start_bars == 0 && r.trim_eighths == 0 && r.length == 5 * kBar && r.rec_start == 0);
+  {
+    const auto hits = hitTimes(40 * kBar, 5 * kBar);
+    CHECK(hits.size() == 2);
+    for (int64_t t : hits) CHECK(floorMod(t, 5 * kBar) == kBar);
+  }
+  std::vector<float> loop(static_cast<size_t>(2 * kBar), 0.0f);
+  loop[0] = 1.0f;
+  CHECK(rig.engine.importLoop(3, loop.data(), 2 * kBar, 2 * kBar, true, 0, 0, 0, 2 * kBar) == 0);
+  rig.send(CommandType::TrackMute, 0, 1);
+  rig.run(10, [](int64_t) { return 0.0f; });
+  CHECK(rig.status().tracks[3].rec_start == 2 * kBar);
+  {
+    const auto hits = hitTimes(60 * kBar, 2 * kBar);
+    CHECK(hits.size() == 2);
+    for (int64_t t : hits) CHECK(floorMod(t, 2 * kBar) == 0);
+  }
+}
+
+void testInputMonitoring() {
+  std::printf("input monitoring: off, auto (armed/recording only), on (always), with level\n");
+  auto steady = [](int64_t) { return 0.4f; };
+  Rig rig;
+  rig.run(100, steady);
+  CHECK(std::fabs(rig.out.back()) < 1e-6f);  // off by default
+  rig.send(CommandType::SetInputMonitor, 0, 2, 0.5);  // In 1: on at half level
+  rig.run(100, steady);
+  CHECK(std::fabs(rig.out.back() - 0.2f) < 1e-3f);  // heard while stopped, no track
+  CHECK(rig.status().input_monitor_mode[0] == 2);
+  CHECK(std::fabs(rig.status().input_monitor_volume[0] - 0.5f) < 1e-6f);
+  rig.send(CommandType::SetInputMonitor, 0, 1, 1.0);  // auto: nothing armed yet
+  rig.run(100, steady);
+  CHECK(std::fabs(rig.out.back()) < 1e-3f);
+  rig.send(CommandType::TrackLengthMode, 0, 2);
+  rig.send(CommandType::TrackTap, 0);  // armed during the count-in
+  rig.run(100, steady);
+  CHECK(std::fabs(rig.out.back() - 0.4f) < 1e-3f);
+  // Another input on "on" doesn't hear In 1.
+  rig.send(CommandType::SetInputMonitor, 0, 0, 1.0);
+  rig.send(CommandType::SetInputMonitor, 1, 2, 1.0);
+  rig.run(100, steady);
+  CHECK(std::fabs(rig.out.back()) < 1e-3f);
+}
+
 }  // namespace
 
 int main() {
@@ -926,6 +1031,8 @@ int main() {
   testTrimSeamAndLiveCrossfade();
   testRecordingRoundTrip();
   testNormGain();
+  testTrimKeepsMusicInPlace();
+  testInputMonitoring();
   if (failures) {
     std::printf("%d check(s) failed\n", failures);
     return 1;

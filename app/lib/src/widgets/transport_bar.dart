@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:looper_engine/looper_engine.dart';
 
@@ -46,6 +48,7 @@ class TransportBar extends StatelessWidget {
           BeatLamps(status: s),
           _PositionReadout(status: s, position: pos),
           _MetronomeControl(controller: controller),
+          _InputMonitors(controller: controller),
           SessionButton(sessions: controller.sessions, onPressed: onOpenSessions),
           IconButton(tooltip: 'Audio settings', onPressed: onOpenSettings, icon: const Icon(Icons.tune)),
         ],
@@ -280,6 +283,151 @@ class _MetronomeControl extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// One button per input: its level, and whether you hear it through the app.
+/// Click cycles Off → On (always) → Auto (while recording on it); the arrow
+/// sets the level.
+class _InputMonitors extends StatelessWidget {
+  const _InputMonitors({required this.controller});
+
+  final LooperController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = controller.status;
+    final inputs = s.inputPeaks.length;
+    if (inputs == 0) return const SizedBox.shrink();
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var ch = 0; ch < inputs && ch < 8; ch++) _InputMonitor(controller: controller, channel: ch),
+      ],
+    );
+  }
+}
+
+class _InputMonitor extends StatelessWidget {
+  const _InputMonitor({required this.controller, required this.channel});
+
+  final LooperController controller;
+  final int channel;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = controller;
+    final mode = c.monitorModes[channel];
+    final heard = c.inputHeard(channel);
+    final peak = channel < c.status.inputPeaks.length ? c.status.inputPeaks[channel] : 0.0;
+    final db = peak > 0 ? 20 * math.log(peak) / math.ln10 : -96.0;
+    final level = ((db + 48) / 48).clamp(0.0, 1.0);
+    final (icon, modeText) = switch (mode) {
+      MonitorMode.off => (Icons.headset_off, 'Off'),
+      MonitorMode.on => (Icons.headphones, 'On'),
+      MonitorMode.auto => (Icons.headphones, 'Auto'),
+    };
+    final latency = c.monitorLatencyMs.toStringAsFixed(0);
+    return Padding(
+      padding: const EdgeInsets.only(right: 6),
+      child: Tooltip(
+        message:
+            'In ${channel + 1} monitoring: $modeText — click: Off → On (always) → Auto (while '
+            'recording on it). Heard ~$latency ms late through the app.',
+        child: Material(
+          color: heard ? LooperColors.play.withValues(alpha: 0.15) : LooperColors.surfaceHigh,
+          borderRadius: BorderRadius.circular(8),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => c.cycleMonitorMode(channel),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(8, 4, 2, 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'In ${channel + 1}',
+                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 3),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(2),
+                        child: SizedBox(
+                          width: 34,
+                          height: 4,
+                          child: LinearProgressIndicator(
+                            value: level,
+                            color: peak >= 0.99 ? LooperColors.downbeat : LooperColors.record,
+                            backgroundColor: LooperColors.background,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(width: 6),
+                  Icon(icon, size: 18, color: heard ? LooperColors.play : LooperColors.textSecondary),
+                  if (mode == MonitorMode.auto)
+                    const Text(' A', style: TextStyle(fontSize: 10, color: LooperColors.textSecondary)),
+                  PopupMenuButton<void>(
+                    tooltip: 'Monitoring level',
+                    padding: EdgeInsets.zero,
+                    iconSize: 16,
+                    icon: const Icon(Icons.arrow_drop_down),
+                    itemBuilder: (_) => [
+                      PopupMenuItem<void>(
+                        enabled: false,
+                        child: _MonitorLevel(controller: c, channel: channel),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MonitorLevel extends StatefulWidget {
+  const _MonitorLevel({required this.controller, required this.channel});
+
+  final LooperController controller;
+  final int channel;
+
+  @override
+  State<_MonitorLevel> createState() => _MonitorLevelState();
+}
+
+class _MonitorLevelState extends State<_MonitorLevel> {
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.controller;
+    final v = c.monitorVolumes[widget.channel];
+    return SizedBox(
+      width: 220,
+      child: Row(
+        children: [
+          Text('In ${widget.channel + 1}', style: const TextStyle(color: LooperColors.textPrimary)),
+          Expanded(
+            child: Slider(
+              value: v,
+              max: 1.5,
+              onChanged: (x) => setState(() => c.setMonitor(widget.channel, volume: x)),
+            ),
+          ),
+          SizedBox(
+            width: 36,
+            child: Text('${(v * 100).round()}%', style: const TextStyle(color: LooperColors.textPrimary)),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -61,7 +61,10 @@ class LooperController extends ChangeNotifier {
   int beatsPerBar = 4;
   bool metronomeOn = true;
   double metronomeVolume = 0.5;
-  bool monitoring = false;
+
+  /// Per input: how it is heard through the app, and at what level.
+  final List<MonitorMode> monitorModes = List.filled(maxInputs, MonitorMode.off);
+  final List<double> monitorVolumes = List.filled(maxInputs, 1.0);
   int countInBars = 1;
 
   /// Mute/unmute waits for: 0 = nothing, 1 = beat, 2 = bar.
@@ -268,7 +271,6 @@ class LooperController extends ChangeNotifier {
     _engine
       ..setTempo(bpm, beatsPerBar)
       ..setMetronome(on: metronomeOn, volume: metronomeVolume)
-      ..setMonitoring(monitoring)
       ..setCountIn(countInBars)
       ..setMuteQuantize(muteQuantize)
       ..setFeedback(feedback);
@@ -279,6 +281,9 @@ class LooperController extends ChangeNotifier {
         ..trackSetLengthMode(i, tracks[i].lengthMode)
         ..trackSetVolume(i, tracks[i].volume)
         ..trackSetPan(i, tracks[i].pan);
+    }
+    for (var ch = 0; ch < maxInputs; ch++) {
+      _engine.setInputMonitor(ch, monitorModes[ch], monitorVolumes[ch]);
     }
   }
 
@@ -339,12 +344,38 @@ class LooperController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void setMonitoring(bool on) {
-    monitoring = on;
-    _engine.setMonitoring(on);
+  /// Cycles an input's monitoring: off → on → auto → off.
+  void cycleMonitorMode(int channel) => setMonitor(
+    channel,
+    mode: switch (monitorModes[channel]) {
+      MonitorMode.off => MonitorMode.on,
+      MonitorMode.on => MonitorMode.auto,
+      MonitorMode.auto => MonitorMode.off,
+    },
+  );
+
+  void setMonitor(int channel, {MonitorMode? mode, double? volume}) {
+    monitorModes[channel] = mode ?? monitorModes[channel];
+    monitorVolumes[channel] = (volume ?? monitorVolumes[channel]).clamp(0, 1.5).toDouble();
+    _engine.setInputMonitor(channel, monitorModes[channel], monitorVolumes[channel]);
     _save();
     notifyListeners();
   }
+
+  /// Whether an input is heard through the app right now.
+  bool inputHeard(int channel) {
+    final mode = monitorModes[channel];
+    if (mode == MonitorMode.on) return true;
+    if (mode == MonitorMode.off) return false;
+    return status.tracks.any(
+      (t) =>
+          t.inputChannel == channel &&
+          (t.state == TrackState.armed || t.state == TrackState.recording || t.overdubbing),
+    );
+  }
+
+  /// Round trip heard when monitoring through the app, in ms.
+  double get monitorLatencyMs => status.latencyFrames / status.sampleRate * 1000;
 
   void setCountIn(int bars) {
     countInBars = bars;
@@ -440,8 +471,6 @@ class LooperController extends ChangeNotifier {
 
   // ---------------------------------------------------------------- trim
 
-  int get _stepEighths => trimStep == 0 ? 2 * status.beatsPerBar : trimStep;
-
   /// Cycles the trim step: ⅛ → ¼ → bar.
   void cycleTrimStep() {
     trimStep = switch (trimStep) {
@@ -461,15 +490,33 @@ class LooperController extends ChangeNotifier {
 
   bool _canTrim(TrackStatus t) => t.state == TrackState.playing && !t.trimLocked && !t.overdubbing;
 
-  /// Whether the start can move by one step in [direction] (-1 earlier, +1 later).
+  /// Whether the start can move by one step in [direction] (-1 earlier, +1
+  /// later). With the bar step this moves the loop's boundary and the music
+  /// stays where it was played (cutting or restoring a bar at the start);
+  /// with ⅛ / ¼ it nudges the music against the grid.
   bool canShiftStart(int i, int direction) {
     final t = status.tracks[i];
-    final target = t.trimEighths + direction * _stepEighths;
-    return _canTrim(t) && target >= t.trimMinEighths && target <= t.trimMaxEighths;
+    if (!_canTrim(t)) return false;
+    if (trimStep == 0) {
+      final target = t.startBars + direction;
+      return target >= t.startBarsMin && target <= t.startBarsMax;
+    }
+    final target = t.trimEighths + direction * trimStep;
+    return target >= t.trimMinEighths && target <= t.trimMaxEighths;
   }
 
   void shiftStart(int i, int direction) {
-    if (canShiftStart(i, direction)) _engine.trackShiftStart(i, direction * _stepEighths);
+    if (!canShiftStart(i, direction)) return;
+    trimStep == 0
+        ? _engine.trackShiftStartBars(i, direction)
+        : _engine.trackShiftStart(i, direction * trimStep);
+  }
+
+  bool canResetTrim(int i) => _canTrim(status.tracks[i]) && status.tracks[i].trimmed;
+
+  /// Back to the take exactly as recorded.
+  void resetTrim(int i) {
+    if (canResetTrim(i)) _engine.trackResetTrim(i);
   }
 
   /// Whether a bar can be removed (-1) or added back (+1) at the end.
@@ -566,7 +613,15 @@ class LooperController extends ChangeNotifier {
     beatsPerBar = p.getInt('beatsPerBar') ?? beatsPerBar;
     metronomeOn = p.getBool('metronomeOn') ?? metronomeOn;
     metronomeVolume = p.getDouble('metronomeVolume') ?? metronomeVolume;
-    monitoring = p.getBool('monitoring') ?? monitoring;
+    // Older versions had one switch for "auto" monitoring on every input.
+    final legacyAuto = p.getBool('monitoring') ?? false;
+    for (var ch = 0; ch < maxInputs; ch++) {
+      final mode = p.getInt('monitor$ch.mode');
+      monitorModes[ch] = mode != null
+          ? MonitorMode.values[mode.clamp(0, MonitorMode.values.length - 1)]
+          : (legacyAuto ? MonitorMode.auto : MonitorMode.off);
+      monitorVolumes[ch] = p.getDouble('monitor$ch.volume') ?? 1.0;
+    }
     countInBars = p.getInt('countInBars') ?? countInBars;
     muteQuantize = p.getInt('muteQuantize') ?? muteQuantize;
     feedback = p.getDouble('feedback') ?? feedback;
@@ -593,11 +648,15 @@ class LooperController extends ChangeNotifier {
       ..setInt('beatsPerBar', beatsPerBar)
       ..setBool('metronomeOn', metronomeOn)
       ..setDouble('metronomeVolume', metronomeVolume)
-      ..setBool('monitoring', monitoring)
       ..setInt('countInBars', countInBars)
       ..setInt('muteQuantize', muteQuantize)
       ..setDouble('feedback', feedback)
       ..setInt('trimStep', trimStep);
+    for (var ch = 0; ch < maxInputs; ch++) {
+      p
+        ..setInt('monitor$ch.mode', monitorModes[ch].index)
+        ..setDouble('monitor$ch.volume', monitorVolumes[ch]);
+    }
     for (var i = 0; i < maxTracks; i++) {
       p
         ..setDouble('track$i.pan', tracks[i].pan)

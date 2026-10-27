@@ -330,6 +330,11 @@ class _Header extends StatelessWidget {
             ],
           ),
         ),
+        if (controller.inputHeard(input))
+          const Tooltip(
+            message: 'You hear this input through the app (top bar)',
+            child: Icon(Icons.headphones, size: 14, color: LooperColors.play),
+          ),
         const SizedBox(width: 8),
         Expanded(
           child: _Meter(level: inputPeak, color: LooperColors.record),
@@ -475,6 +480,26 @@ class _TrimmableWaveform extends StatelessWidget {
                   ),
                 ),
               ),
+              if (c.canResetTrim(index))
+                Positioned(
+                  right: 2,
+                  top: 1,
+                  child: Tooltip(
+                    message: 'Undo all trimming: back to the take as recorded',
+                    child: InkWell(
+                      onTap: () => c.resetTrim(index),
+                      borderRadius: BorderRadius.circular(4),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 3),
+                        decoration: BoxDecoration(
+                          color: LooperColors.surfaceHigh.withValues(alpha: 0.85),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Icon(Icons.restart_alt, size: 12),
+                      ),
+                    ),
+                  ),
+                ),
             ],
           ),
         ),

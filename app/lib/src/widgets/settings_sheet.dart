@@ -183,15 +183,13 @@ class SettingsSheet extends StatelessWidget {
                 style: TextStyle(fontSize: 12, color: LooperColors.textSecondary),
               ),
             ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('Software input monitoring'),
-              subtitle: const Text(
-                'Hear the input of armed / recording tracks through the app. '
-                'Leave off if your interface has direct monitoring.',
-              ),
-              value: c.monitoring,
-              onChanged: c.setMonitoring,
+            const SizedBox(height: 8),
+            Text(
+              'Hearing yourself: use the headphone buttons of the inputs in the top bar '
+              '(On = always, Auto = while recording on that input). Through the app you hear '
+              'yourself ${c.monitorLatencyMs.toStringAsFixed(0)} ms late; a smaller buffer helps, and '
+              "your interface's direct monitoring (if it has one) has no delay at all.",
+              style: const TextStyle(fontSize: 12, color: LooperColors.textSecondary),
             ),
           ],
         ),

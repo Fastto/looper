@@ -128,15 +128,23 @@ void main() {
         locked: false,
         originBars: 0.5,
         trimEighths: 3,
+        startBars: 1,
+        recordedHalfBars: 10,
+        anchorBars: 2,
       );
       final json = trimmed.toJson();
-      expect(json['trim'], {'originBars': 0.5, 'eighths': 3});
+      expect(json['trim'], {'originBars': 0.5, 'eighths': 3, 'startBars': 1, 'recordedHalfBars': 10});
+      expect(json['anchorBars'], 2);
       final back = SessionTrack.fromJson(json);
       expect(back.locked, isFalse);
       expect(back.originBars, 0.5);
       expect(back.trimEighths, 3);
+      expect(back.startBars, 1);
+      expect(back.recordedHalfBars, 10);
+      expect(back.anchorBars, 2);
       final v1 = SessionTrack.fromJson({'file': 'track-1.wav', 'halfBars': 4});
       expect(v1.locked, isTrue);
+      expect(v1.anchorBars, 0);
       expect(const SessionTrack(file: 'x.wav', halfBars: 2).toJson().containsKey('trim'), isFalse);
     });
 

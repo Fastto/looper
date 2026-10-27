@@ -18,6 +18,17 @@ const int maxInputs = LOOPER_MAX_INPUTS;
 
 enum TrackState { empty, armed, recording, playing }
 
+/// How an input is heard through the app.
+enum MonitorMode {
+  off,
+
+  /// While a track on this input is armed, recording or layering.
+  auto,
+
+  /// Always, e.g. to play along without recording.
+  on,
+}
+
 /// The last overdub layer of a track (one level of undo/redo).
 enum LayerState { none, recording, active, undone }
 
@@ -59,6 +70,11 @@ class TrackStatus {
     required this.trimMinEighths,
     required this.trimMaxEighths,
     required this.trimMaxBars,
+    this.startBars = 0,
+    this.startBarsMin = 0,
+    this.startBarsMax = 0,
+    this.recAnchor = 0,
+    this.recLength = 0,
     required this.origin,
     required this.windowStart,
     required this.audioEnd,
@@ -130,6 +146,18 @@ class TrackStatus {
   /// Longest allowed length in bars; 0 when the length can't change.
   final int trimMaxBars;
 
+  /// Whole bars cut at the start (the music stays where it was played), and its range.
+  final int startBars;
+  final int startBarsMin;
+  final int startBarsMax;
+
+  /// Transport frame of the take's downbeat (a bar line), and its recorded length.
+  final int recAnchor;
+  final int recLength;
+
+  /// Anything differs from the take as recorded.
+  bool get trimmed => startBars != 0 || trimEighths != 0 || (recLength > 0 && length != recLength);
+
   /// Recording frames: original downbeat, loop start, end of recorded audio.
   final int origin;
   final int windowStart;
@@ -172,6 +200,8 @@ class EngineStatus {
     required this.blockCounter,
     required this.inputPeaks,
     required this.tracks,
+    this.inputMonitorModes = const [],
+    this.inputMonitorVolumes = const [],
   });
 
   static final idle = EngineStatus(
@@ -219,6 +249,10 @@ class EngineStatus {
   final int blockCounter;
   final List<double> inputPeaks;
   final List<TrackStatus> tracks;
+
+  /// Per input: [MonitorMode] index and level.
+  final List<int> inputMonitorModes;
+  final List<double> inputMonitorVolumes;
 
   double get beatFrames => barFrames / beatsPerBar;
 
@@ -305,6 +339,10 @@ class LooperEngine {
   void trackSetPan(int track, double pan) => _bindings.looper_track_set_pan(track, pan);
   void trackSetNormGain(int track, double gain) => _bindings.looper_track_set_norm_gain(track, gain);
   void trackShiftStart(int track, int eighths) => _bindings.looper_track_shift_start(track, eighths);
+  void trackShiftStartBars(int track, int bars) => _bindings.looper_track_shift_start_bars(track, bars);
+  void trackResetTrim(int track) => _bindings.looper_track_reset_trim(track);
+  void setInputMonitor(int channel, MonitorMode mode, double volume) =>
+      _bindings.looper_set_input_monitor(channel, mode.index, volume);
   void trackTrimBars(int track, int bars) => _bindings.looper_track_trim_bars(track, bars);
   void trackSetLengthMode(int track, int halfBars) => _bindings.looper_track_set_length_mode(track, halfBars);
 
@@ -330,6 +368,11 @@ class LooperEngine {
       barFrames: s.bar_frames,
       blockCounter: s.block_counter,
       inputPeaks: List.generate(s.input_channels.clamp(0, maxInputs), (i) => s.input_peaks[i]),
+      inputMonitorModes: List.generate(s.input_channels.clamp(0, maxInputs), (i) => s.input_monitor_mode[i]),
+      inputMonitorVolumes: List.generate(
+        s.input_channels.clamp(0, maxInputs),
+        (i) => s.input_monitor_volume[i],
+      ),
       tracks: List.generate(maxTracks, (i) {
         final t = s.tracks[i];
         return TrackStatus(
@@ -348,6 +391,11 @@ class LooperEngine {
           trimMinEighths: t.trim_min_eighths,
           trimMaxEighths: t.trim_max_eighths,
           trimMaxBars: t.trim_max_bars,
+          startBars: t.start_bars,
+          startBarsMin: t.start_bars_min,
+          startBarsMax: t.start_bars_max,
+          recAnchor: t.rec_anchor,
+          recLength: t.rec_length,
           origin: t.origin,
           windowStart: t.window_start,
           audioEnd: t.audio_end,
@@ -413,6 +461,9 @@ class LooperEngine {
     int origin = 0,
     int trimEighths = 0,
     int length = 0,
+    int anchor = 0,
+    int recLength = 0,
+    int startBars = 0,
   }) {
     if (data.isEmpty) return -2;
     final buffer = calloc<Float>(data.length);
@@ -427,6 +478,9 @@ class LooperEngine {
         origin,
         trimEighths,
         length,
+        anchor,
+        recLength,
+        startBars,
       );
     } finally {
       calloc.free(buffer);

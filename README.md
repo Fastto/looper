@@ -25,8 +25,10 @@ instrument, and layer loops that are always in time.
 | Undo / redo arrows | Remove / restore the last layer of that track |
 | `N` next to the volume | Normalize the loop to −1 dBFS peak (non-destructive); click again to switch off |
 | L–R slider | Pan the track (double-click to centre) |
-| `‹ ›` left of the waveform | Trim: start the loop earlier / later by the step (`⅛`, `¼`, bar — click the chip) |
+| `‹ ›` left of the waveform | Trim the start: with step `bar` add/cut a bar (the music stays in place); with `⅛` / `¼` nudge the timing (click the chip to change the step) |
 | `‹ ›` right of the waveform | Remove / add back a bar at the end |
+| `↺` on the waveform | Undo all trimming |
+| `In 1 🎧` buttons (top bar) | Hear an input through the app: Off → On (always) → Auto (while recording); arrow = level |
 | Bin icon | Clear the track |
 | Folder button (top bar) | Sessions: rename, new, duplicate, open, delete |
 | **Export audio…** (or `⌘E`) | Stems and a mix as WAV, aligned from bar 1, into a folder you choose |

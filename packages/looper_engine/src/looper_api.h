@@ -37,6 +37,13 @@ typedef enum LooperLayerState {
   LOOPER_LAYER_UNDONE = 3,     // silent; can be redone
 } LooperLayerState;
 
+// How an input is heard through the app (software monitoring).
+typedef enum LooperMonitorMode {
+  LOOPER_MONITOR_OFF = 0,
+  LOOPER_MONITOR_AUTO = 1,  // while a track on this input is armed, recording or layering
+  LOOPER_MONITOR_ON = 2,    // always: play along without recording
+} LooperMonitorMode;
+
 typedef struct LooperTrackStatus {
   int32_t state;          // LooperTrackState
   int32_t muted;
@@ -51,13 +58,18 @@ typedef struct LooperTrackStatus {
   int32_t pending_mute;   // -1 none, 0/1 = unmute/mute waiting for the grid
   // Trim: the loop is a window over the recording (see docs/DESIGN.md §3.5).
   int32_t trim_locked;    // 1 once layered on (or loaded flattened): no trimming
-  int32_t trim_eighths;   // start shift in eighth notes from the original downbeat
+  int32_t trim_eighths;   // timing nudge of the start, in eighth notes
   int32_t trim_min_eighths;
   int32_t trim_max_eighths;
+  int32_t start_bars;     // whole bars cut (+) or added (-) at the start; music stays put
+  int32_t start_bars_min;
+  int32_t start_bars_max;
   int32_t trim_max_bars;  // longest allowed length in bars (0 = length can't change)
   int64_t origin;         // recording frame of the original downbeat
   int64_t window_start;   // recording frame where the loop starts
   int64_t audio_end;      // recording frames that hold audio (silence beyond)
+  int64_t rec_anchor;     // transport frame (a bar line) where the take's downbeat was
+  int64_t rec_length;     // the loop length as recorded (what reset-trim restores)
   float pan;              // -1 (left) .. 1 (right)
   float norm_gain;        // normalization gain on top of the volume (1 = off)
   float volume;
@@ -85,6 +97,8 @@ typedef struct LooperStatus {
   int64_t commands_handled; // commands applied by the audio thread so far
   float metronome_volume;
   float input_peaks[LOOPER_MAX_INPUTS];
+  int32_t input_monitor_mode[LOOPER_MAX_INPUTS];    // LooperMonitorMode per input
+  float input_monitor_volume[LOOPER_MAX_INPUTS];
   LooperTrackStatus tracks[LOOPER_MAX_TRACKS];
 } LooperStatus;
 
@@ -118,7 +132,10 @@ LOOPER_EXPORT void looper_stop(void);
 // Ignored while any track holds audio.
 LOOPER_EXPORT void looper_set_tempo(double bpm, int32_t beats_per_bar);
 LOOPER_EXPORT void looper_set_metronome(int32_t on, float volume);
+// Sets every input to AUTO (on != 0) or OFF.
 LOOPER_EXPORT void looper_set_monitoring(int32_t on);
+// Monitoring mode (LooperMonitorMode) and level of one input.
+LOOPER_EXPORT void looper_set_input_monitor(int32_t channel, int32_t mode, float volume);
 LOOPER_EXPORT void looper_set_count_in(int32_t bars);
 LOOPER_EXPORT void looper_set_latency_frames(int32_t frames);
 // Mute/unmute of playing tracks waits for: 0 = nothing, 1 = beat, 2 = bar.
@@ -152,11 +169,17 @@ LOOPER_EXPORT void looper_track_set_length_mode(int32_t track, int32_t half_bars
 LOOPER_EXPORT void looper_track_set_pan(int32_t track, float pan);
 // Extra gain that normalizes a loop (1 = off). Reset by a new take or clear.
 LOOPER_EXPORT void looper_track_set_norm_gain(int32_t track, float gain);
-// Moves the loop start by `eighths` eighth notes (negative = earlier), keeping
-// the length; ignored if out of range or the trim is locked.
+// Nudges the loop start by `eighths` eighth notes (negative = earlier): the
+// music moves against the grid by that much. Keeps the length; ignored if
+// out of range or the trim is locked.
 LOOPER_EXPORT void looper_track_shift_start(int32_t track, int32_t eighths);
+// Moves the loop's start boundary by whole bars (positive = cut bars at the
+// start) without moving the music in time. Keeps the length.
+LOOPER_EXPORT void looper_track_shift_start_bars(int32_t track, int32_t bars);
 // Adds (positive) or removes (negative) whole bars at the end of the loop.
 LOOPER_EXPORT void looper_track_trim_bars(int32_t track, int32_t bars);
+// Restores the loop exactly as recorded: original start, length and timing.
+LOOPER_EXPORT void looper_track_reset_trim(int32_t track);
 
 // --- read back -------------------------------------------------------------
 
@@ -183,14 +206,15 @@ LOOPER_EXPORT int64_t looper_track_export(int32_t track, float* out, int64_t cap
 // busy, -2 if the trim is locked (use looper_track_export instead).
 LOOPER_EXPORT int64_t looper_track_export_recording(int32_t track, float* out, int64_t capacity);
 // Loads audio into an EMPTY track, resampled to `target_frames`, and starts
-// it playing in time (anchored to bar 1). With `locked`, the audio is the
-// loop itself; otherwise it is a whole recording and `origin`,
-// `trim_eighths` and `length` (frames) restore its trim window.
-// Returns 0 on success, -1 if busy (track not empty or commands pending),
-// -2 if the lengths are invalid.
+// it playing in time, its downbeat on transport frame `anchor` (a bar line).
+// With `locked`, the audio is the loop itself; otherwise it is a whole
+// recording and `origin`, `start_bars`, `trim_eighths`, `length` and
+// `rec_length` (frames) restore its trim window. Returns 0 on success, -1 if busy (track not empty
+// or commands pending), -2 if the lengths are invalid.
 LOOPER_EXPORT int32_t looper_track_import(int32_t track, const float* data, int64_t frames,
                                           int64_t target_frames, int32_t locked, int64_t origin,
-                                          int32_t trim_eighths, int64_t length);
+                                          int32_t trim_eighths, int64_t length, int64_t anchor,
+                                          int64_t rec_length, int32_t start_bars);
 
 #ifdef __cplusplus
 }

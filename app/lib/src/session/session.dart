@@ -13,6 +13,9 @@ class SessionTrack {
     this.locked = true,
     this.originBars = 0,
     this.trimEighths = 0,
+    this.startBars = 0,
+    this.recordedHalfBars = 0,
+    this.anchorBars = 0,
   });
 
   factory SessionTrack.fromJson(Map<String, dynamic> json) => SessionTrack(
@@ -28,6 +31,9 @@ class SessionTrack {
     locked: json['trim'] == null,
     originBars: ((json['trim'] as Map<String, dynamic>?)?['originBars'] as num?)?.toDouble() ?? 0,
     trimEighths: ((json['trim'] as Map<String, dynamic>?)?['eighths'] as num?)?.toInt() ?? 0,
+    startBars: ((json['trim'] as Map<String, dynamic>?)?['startBars'] as num?)?.toInt() ?? 0,
+    recordedHalfBars: ((json['trim'] as Map<String, dynamic>?)?['recordedHalfBars'] as num?)?.toInt() ?? 0,
+    anchorBars: (json['anchorBars'] as num?)?.toInt() ?? 0,
   );
 
   /// WAV file name inside the session folder; null for an empty track.
@@ -54,6 +60,14 @@ class SessionTrack {
   final double originBars;
   final int trimEighths;
 
+  /// Whole bars cut at the start, and the loop length as recorded.
+  final int startBars;
+  final int recordedHalfBars;
+
+  /// Bar (0-based) of the transport where the loop's downbeat plays, so loops
+  /// recorded from different bars stay in the same relation after reopening.
+  final int anchorBars;
+
   bool get hasAudio => file != null && halfBars > 0;
 
   Map<String, dynamic> toJson() => {
@@ -65,7 +79,14 @@ class SessionTrack {
     'muted': muted,
     'input': input,
     'lengthMode': lengthMode,
-    if (!locked) 'trim': {'originBars': originBars, 'eighths': trimEighths},
+    'anchorBars': anchorBars,
+    if (!locked)
+      'trim': {
+        'originBars': originBars,
+        'eighths': trimEighths,
+        'startBars': startBars,
+        'recordedHalfBars': recordedHalfBars,
+      },
   };
 }
 

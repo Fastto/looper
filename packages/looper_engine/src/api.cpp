@@ -269,6 +269,14 @@ void looper_set_metronome(int32_t on, float volume) {
   });
 }
 
+void looper_set_input_monitor(int32_t channel, int32_t mode, float volume) {
+  sendCommand(looper::CommandType::SetInputMonitor, [&](looper::Command& c) {
+    c.track = channel;
+    c.i = mode;
+    c.d = volume;
+  });
+}
+
 void looper_set_monitoring(int32_t on) {
   sendCommand(looper::CommandType::SetMonitoring, [&](looper::Command& c) { c.i = on; });
 }
@@ -379,11 +387,23 @@ int64_t looper_track_export_recording(int32_t track, float* out, int64_t capacit
 
 int32_t looper_track_import(int32_t track, const float* data, int64_t frames,
                             int64_t target_frames, int32_t locked, int64_t origin,
-                            int32_t trim_eighths, int64_t length) {
+                            int32_t trim_eighths, int64_t length, int64_t anchor,
+                            int64_t rec_length, int32_t start_bars) {
   auto& s = state();
   return s.engine ? s.engine->importLoop(track, data, frames, target_frames, locked != 0, origin,
-                                         trim_eighths, length)
+                                         trim_eighths, length, anchor, rec_length, start_bars)
                   : -1;
+}
+
+void looper_track_shift_start_bars(int32_t track, int32_t bars) {
+  sendCommand(looper::CommandType::TrackShiftStartBars, [&](looper::Command& c) {
+    c.track = track;
+    c.i = bars;
+  });
+}
+
+void looper_track_reset_trim(int32_t track) {
+  sendCommand(looper::CommandType::TrackResetTrim, [&](looper::Command& c) { c.track = track; });
 }
 
 void looper_track_set_norm_gain(int32_t track, float gain) {

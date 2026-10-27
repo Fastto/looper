@@ -169,6 +169,7 @@ class LooperEngineBindings {
   late final _looper_set_metronome = _looper_set_metronomePtr
       .asFunction<void Function(int, double)>();
 
+  /// Sets every input to AUTO (on != 0) or OFF.
   void looper_set_monitoring(int on1) {
     return _looper_set_monitoring(on1);
   }
@@ -179,6 +180,18 @@ class LooperEngineBindings {
       );
   late final _looper_set_monitoring = _looper_set_monitoringPtr
       .asFunction<void Function(int)>();
+
+  /// Monitoring mode (LooperMonitorMode) and level of one input.
+  void looper_set_input_monitor(int channel, int mode, double volume) {
+    return _looper_set_input_monitor(channel, mode, volume);
+  }
+
+  late final _looper_set_input_monitorPtr =
+      _lookup<
+        ffi.NativeFunction<ffi.Void Function(ffi.Int32, ffi.Int32, ffi.Float)>
+      >('looper_set_input_monitor');
+  late final _looper_set_input_monitor = _looper_set_input_monitorPtr
+      .asFunction<void Function(int, int, double)>();
 
   void looper_set_count_in(int bars) {
     return _looper_set_count_in(bars);
@@ -377,8 +390,9 @@ class LooperEngineBindings {
   late final _looper_track_set_norm_gain = _looper_track_set_norm_gainPtr
       .asFunction<void Function(int, double)>();
 
-  /// Moves the loop start by `eighths` eighth notes (negative = earlier), keeping
-  /// the length; ignored if out of range or the trim is locked.
+  /// Nudges the loop start by `eighths` eighth notes (negative = earlier): the
+  /// music moves against the grid by that much. Keeps the length; ignored if
+  /// out of range or the trim is locked.
   void looper_track_shift_start(int track, int eighths) {
     return _looper_track_shift_start(track, eighths);
   }
@@ -388,6 +402,19 @@ class LooperEngineBindings {
         'looper_track_shift_start',
       );
   late final _looper_track_shift_start = _looper_track_shift_startPtr
+      .asFunction<void Function(int, int)>();
+
+  /// Moves the loop's start boundary by whole bars (positive = cut bars at the
+  /// start) without moving the music in time. Keeps the length.
+  void looper_track_shift_start_bars(int track, int bars) {
+    return _looper_track_shift_start_bars(track, bars);
+  }
+
+  late final _looper_track_shift_start_barsPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int32, ffi.Int32)>>(
+        'looper_track_shift_start_bars',
+      );
+  late final _looper_track_shift_start_bars = _looper_track_shift_start_barsPtr
       .asFunction<void Function(int, int)>();
 
   /// Adds (positive) or removes (negative) whole bars at the end of the loop.
@@ -401,6 +428,18 @@ class LooperEngineBindings {
       );
   late final _looper_track_trim_bars = _looper_track_trim_barsPtr
       .asFunction<void Function(int, int)>();
+
+  /// Restores the loop exactly as recorded: original start, length and timing.
+  void looper_track_reset_trim(int track) {
+    return _looper_track_reset_trim(track);
+  }
+
+  late final _looper_track_reset_trimPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int32)>>(
+        'looper_track_reset_trim',
+      );
+  late final _looper_track_reset_trim = _looper_track_reset_trimPtr
+      .asFunction<void Function(int)>();
 
   /// --- read back -------------------------------------------------------------
   void looper_get_status(ffi.Pointer<LooperStatus> out) {
@@ -504,11 +543,11 @@ class LooperEngineBindings {
       .asFunction<int Function(int, ffi.Pointer<ffi.Float>, int)>();
 
   /// Loads audio into an EMPTY track, resampled to `target_frames`, and starts
-  /// it playing in time (anchored to bar 1). With `locked`, the audio is the
-  /// loop itself; otherwise it is a whole recording and `origin`,
-  /// `trim_eighths` and `length` (frames) restore its trim window.
-  /// Returns 0 on success, -1 if busy (track not empty or commands pending),
-  /// -2 if the lengths are invalid.
+  /// it playing in time, its downbeat on transport frame `anchor` (a bar line).
+  /// With `locked`, the audio is the loop itself; otherwise it is a whole
+  /// recording and `origin`, `start_bars`, `trim_eighths`, `length` and
+  /// `rec_length` (frames) restore its trim window. Returns 0 on success, -1 if busy (track not empty
+  /// or commands pending), -2 if the lengths are invalid.
   int looper_track_import(
     int track,
     ffi.Pointer<ffi.Float> data,
@@ -518,6 +557,9 @@ class LooperEngineBindings {
     int origin,
     int trim_eighths,
     int length,
+    int anchor,
+    int rec_length,
+    int start_bars,
   ) {
     return _looper_track_import(
       track,
@@ -528,6 +570,9 @@ class LooperEngineBindings {
       origin,
       trim_eighths,
       length,
+      anchor,
+      rec_length,
+      start_bars,
     );
   }
 
@@ -543,12 +588,27 @@ class LooperEngineBindings {
             ffi.Int64,
             ffi.Int32,
             ffi.Int64,
+            ffi.Int64,
+            ffi.Int64,
+            ffi.Int32,
           )
         >
       >('looper_track_import');
   late final _looper_track_import = _looper_track_importPtr
       .asFunction<
-        int Function(int, ffi.Pointer<ffi.Float>, int, int, int, int, int, int)
+        int Function(
+          int,
+          ffi.Pointer<ffi.Float>,
+          int,
+          int,
+          int,
+          int,
+          int,
+          int,
+          int,
+          int,
+          int,
+        )
       >();
 }
 
@@ -644,7 +704,7 @@ final class LooperTrackStatus extends ffi.Struct {
   @ffi.Int32()
   external int trim_locked;
 
-  /// start shift in eighth notes from the original downbeat
+  /// timing nudge of the start, in eighth notes
   @ffi.Int32()
   external int trim_eighths;
 
@@ -653,6 +713,16 @@ final class LooperTrackStatus extends ffi.Struct {
 
   @ffi.Int32()
   external int trim_max_eighths;
+
+  /// whole bars cut (+) or added (-) at the start; music stays put
+  @ffi.Int32()
+  external int start_bars;
+
+  @ffi.Int32()
+  external int start_bars_min;
+
+  @ffi.Int32()
+  external int start_bars_max;
 
   /// longest allowed length in bars (0 = length can't change)
   @ffi.Int32()
@@ -669,6 +739,14 @@ final class LooperTrackStatus extends ffi.Struct {
   /// recording frames that hold audio (silence beyond)
   @ffi.Int64()
   external int audio_end;
+
+  /// transport frame (a bar line) where the take's downbeat was
+  @ffi.Int64()
+  external int rec_anchor;
+
+  /// the loop length as recorded (what reset-trim restores)
+  @ffi.Int64()
+  external int rec_length;
 
   /// -1 (left) .. 1 (right)
   @ffi.Float()
@@ -753,6 +831,13 @@ final class LooperStatus extends ffi.Struct {
 
   @ffi.Array.multi([16])
   external ffi.Array<ffi.Float> input_peaks;
+
+  /// LooperMonitorMode per input
+  @ffi.Array.multi([16])
+  external ffi.Array<ffi.Int32> input_monitor_mode;
+
+  @ffi.Array.multi([16])
+  external ffi.Array<ffi.Float> input_monitor_volume;
 
   @ffi.Array.multi([8])
   external ffi.Array<LooperTrackStatus> tracks;
