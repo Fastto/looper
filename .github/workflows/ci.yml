@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  engine-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run engine tests
+        working-directory: packages/looper_engine
+        run: |
+          cmake -S test_native -B build/test_native
+          cmake --build build/test_native --target engine_test
+          ./build/test_native/engine_test
+
+  flutter:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: Analyze
+        working-directory: app
+        run: |
+          flutter pub get
+          flutter analyze
+      - name: Build macOS
+        working-directory: app
+        run: flutter build macos --debug

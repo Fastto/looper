@@ -1,0 +1,31 @@
+# Run with `dart run ffigen --config ffigen.yaml`.
+name: LooperEngineBindings
+description: |
+  Bindings for `src/looper_api.h`.
+
+  Regenerate bindings with `dart run ffigen --config ffigen.yaml`.
+output: 'lib/looper_engine_bindings_generated.dart'
+headers:
+  entry-points:
+    - 'src/looper_api.h'
+  include-directives:
+    - 'src/looper_api.h'
+preamble: |
+  // ignore_for_file: always_specify_types
+  // ignore_for_file: camel_case_types
+  // ignore_for_file: non_constant_identifier_names
+comments:
+  style: any
+  length: full
+functions:
+  include:
+    - 'looper_.*'
+structs:
+  include:
+    - 'Looper.*'
+enums:
+  include:
+    - 'LooperTrackState'
+macros:
+  include:
+    - 'LOOPER_MAX_.*'

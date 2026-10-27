@@ -1,0 +1,302 @@
+import 'dart:math' as math;
+
+import 'package:flutter/foundation.dart';
+import 'package:looper_engine/looper_engine.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+/// Per-track settings owned by the UI (re-applied whenever the device reopens).
+class TrackSettings {
+  TrackSettings({this.input = 0, this.lengthMode = 0, this.volume = 0.8});
+
+  int input;
+  int lengthMode;
+  double volume;
+}
+
+/// Allowed fixed loop lengths, in half-bars. 0 = auto.
+const List<int> lengthModes = [0, 1, 2, 4, 8, 16];
+
+String lengthModeLabel(int halfBars) => switch (halfBars) {
+  0 => 'Auto',
+  1 => '½',
+  _ => '${halfBars ~/ 2}',
+};
+
+/// Bridges the native engine and the widgets. Widgets call actions; the
+/// home page calls [poll] once per frame to refresh [status].
+class LooperController extends ChangeNotifier {
+  LooperController({LooperEngine? engine}) : _engine = engine ?? LooperEngine();
+
+  final LooperEngine _engine;
+  SharedPreferences? _prefs;
+
+  EngineStatus status = EngineStatus.idle;
+  AudioDevices devices = const AudioDevices(capture: [], playback: []);
+  String? error;
+  bool started = false;
+
+  // Settings (persisted).
+  String? captureName;
+  String? playbackName;
+  int bufferFrames = 128;
+  double latencyOffsetMs = 0;
+  double bpm = 120;
+  int beatsPerBar = 4;
+  bool metronomeOn = true;
+  double metronomeVolume = 0.5;
+  bool monitoring = false;
+  int countInBars = 1;
+  final List<TrackSettings> tracks = List.generate(maxTracks, (_) => TrackSettings());
+
+  final Map<int, (int, List<double>)> _waveforms = {};
+  final List<DateTime> _taps = [];
+
+  Future<void> start() async {
+    _prefs = await SharedPreferences.getInstance();
+    _load();
+    if (!_engine.init()) {
+      error = 'Could not initialize audio.';
+      notifyListeners();
+      return;
+    }
+    devices = _engine.listDevices();
+    _open();
+    started = true;
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _engine.dispose();
+    super.dispose();
+  }
+
+  // ---------------------------------------------------------------- polling
+
+  void poll() {
+    final next = _engine.status();
+    // Without an open device the engine reports zeros; keep a sane grid.
+    status = next.deviceRunning ? next : EngineStatus.idle;
+    notifyListeners();
+  }
+
+  /// Cached waveform of a playing loop (fetched once per recording).
+  List<double> waveform(int track) {
+    final t = status.tracks[track];
+    if (t.state != TrackState.playing) return const [];
+    final key = t.recStart ^ (t.length << 20);
+    final cached = _waveforms[track];
+    if (cached != null && cached.$1 == key) return cached.$2;
+    final data = _engine.waveform(track, 240);
+    _waveforms[track] = (key, data);
+    return data;
+  }
+
+  // ---------------------------------------------------------------- device
+
+  void refreshDevices() {
+    devices = _engine.listDevices();
+    notifyListeners();
+  }
+
+  void selectDevices({String? capture, String? playback, int? buffer}) {
+    captureName = capture ?? captureName;
+    playbackName = playback ?? playbackName;
+    bufferFrames = buffer ?? bufferFrames;
+    _save();
+    _waveforms.clear();
+    _open();
+    notifyListeners();
+  }
+
+  void _open() {
+    int indexOf(List<AudioDevice> list, String? name) =>
+        name == null ? -1 : list.indexWhere((d) => d.name == name);
+    error = _engine.open(
+      captureIndex: indexOf(devices.capture, captureName),
+      playbackIndex: indexOf(devices.playback, playbackName),
+      bufferFrames: bufferFrames,
+    );
+    if (error != null) return;
+    status = _engine.status(); // sample rate is needed by _applyLatency
+    _applyAll();
+  }
+
+  void _applyAll() {
+    _engine
+      ..setTempo(bpm, beatsPerBar)
+      ..setMetronome(on: metronomeOn, volume: metronomeVolume)
+      ..setMonitoring(monitoring)
+      ..setCountIn(countInBars);
+    _applyLatency();
+    for (var i = 0; i < maxTracks; i++) {
+      _engine
+        ..trackSetInput(i, tracks[i].input)
+        ..trackSetLengthMode(i, tracks[i].lengthMode)
+        ..trackSetVolume(i, tracks[i].volume);
+    }
+  }
+
+  int get reportedLatencyFrames => math.max(0, _engine.reportedLatencyFrames);
+
+  void _applyLatency() {
+    final offset = (latencyOffsetMs / 1000 * status.sampleRate).round();
+    _engine.setLatencyFrames(math.max(0, reportedLatencyFrames + offset));
+  }
+
+  void setLatencyOffsetMs(double ms) {
+    latencyOffsetMs = ms;
+    _applyLatency();
+    _save();
+    notifyListeners();
+  }
+
+  // ---------------------------------------------------------------- transport
+
+  void togglePlay() => status.playing ? _engine.stop() : _engine.play();
+
+  bool get tempoLocked => status.anyTrackHoldsAudio;
+
+  void setBpm(double value) {
+    if (tempoLocked) return;
+    bpm = value.clamp(40, 240).roundToDouble();
+    _engine.setTempo(bpm, beatsPerBar);
+    _save();
+    notifyListeners();
+  }
+
+  void setBeatsPerBar(int value) {
+    if (tempoLocked) return;
+    beatsPerBar = value;
+    _engine.setTempo(bpm, beatsPerBar);
+    _save();
+    notifyListeners();
+  }
+
+  /// Tap tempo: average of the recent intervals.
+  void tapTempo() {
+    final now = DateTime.now();
+    if (_taps.isNotEmpty && now.difference(_taps.last).inMilliseconds > 2000) _taps.clear();
+    _taps.add(now);
+    if (_taps.length > 5) _taps.removeAt(0);
+    if (_taps.length < 2) return;
+    final ms = _taps.last.difference(_taps.first).inMilliseconds / (_taps.length - 1);
+    setBpm(60000 / ms);
+  }
+
+  void toggleMetronome() => setMetronome(on: !metronomeOn);
+
+  void setMetronome({bool? on, double? volume}) {
+    metronomeOn = on ?? metronomeOn;
+    metronomeVolume = volume ?? metronomeVolume;
+    _engine.setMetronome(on: metronomeOn, volume: metronomeVolume);
+    _save();
+    notifyListeners();
+  }
+
+  void setMonitoring(bool on) {
+    monitoring = on;
+    _engine.setMonitoring(on);
+    _save();
+    notifyListeners();
+  }
+
+  void setCountIn(int bars) {
+    countInBars = bars;
+    _engine.setCountIn(bars);
+    _save();
+    notifyListeners();
+  }
+
+  // ---------------------------------------------------------------- tracks
+
+  void tapTrack(int i) => _engine.trackTap(i);
+
+  void clearTrack(int i) {
+    _engine.trackClear(i);
+    _waveforms.remove(i);
+  }
+
+  void toggleMute(int i) => _engine.trackSetMuted(i, !status.tracks[i].muted);
+
+  void setTrackVolume(int i, double v) {
+    tracks[i].volume = v;
+    _engine.trackSetVolume(i, v);
+    _save();
+    notifyListeners();
+  }
+
+  void setTrackInput(int i, int channel) {
+    tracks[i].input = channel;
+    _engine.trackSetInput(i, channel);
+    _save();
+    notifyListeners();
+  }
+
+  void setTrackLengthMode(int i, int halfBars) {
+    tracks[i].lengthMode = halfBars;
+    _engine.trackSetLengthMode(i, halfBars);
+    _save();
+    notifyListeners();
+  }
+
+  // ---------------------------------------------------------------- persistence
+
+  void _load() {
+    final p = _prefs!;
+    captureName = p.getString('captureName');
+    playbackName = p.getString('playbackName');
+    bufferFrames = p.getInt('bufferFrames') ?? bufferFrames;
+    latencyOffsetMs = p.getDouble('latencyOffsetMs') ?? latencyOffsetMs;
+    bpm = p.getDouble('bpm') ?? bpm;
+    beatsPerBar = p.getInt('beatsPerBar') ?? beatsPerBar;
+    metronomeOn = p.getBool('metronomeOn') ?? metronomeOn;
+    metronomeVolume = p.getDouble('metronomeVolume') ?? metronomeVolume;
+    monitoring = p.getBool('monitoring') ?? monitoring;
+    countInBars = p.getInt('countInBars') ?? countInBars;
+    for (var i = 0; i < maxTracks; i++) {
+      tracks[i]
+        ..input = p.getInt('track$i.input') ?? 0
+        ..lengthMode = p.getInt('track$i.lengthMode') ?? 0
+        ..volume = p.getDouble('track$i.volume') ?? 0.8;
+    }
+  }
+
+  void _save() {
+    final p = _prefs;
+    if (p == null) return;
+    void setString(String k, String? v) => v == null ? p.remove(k) : p.setString(k, v);
+    setString('captureName', captureName);
+    setString('playbackName', playbackName);
+    p
+      ..setInt('bufferFrames', bufferFrames)
+      ..setDouble('latencyOffsetMs', latencyOffsetMs)
+      ..setDouble('bpm', bpm)
+      ..setInt('beatsPerBar', beatsPerBar)
+      ..setBool('metronomeOn', metronomeOn)
+      ..setDouble('metronomeVolume', metronomeVolume)
+      ..setBool('monitoring', monitoring)
+      ..setInt('countInBars', countInBars);
+    for (var i = 0; i < maxTracks; i++) {
+      p
+        ..setInt('track$i.input', tracks[i].input)
+        ..setInt('track$i.lengthMode', tracks[i].lengthMode)
+        ..setDouble('track$i.volume', tracks[i].volume);
+    }
+  }
+}
+
+/// Musical position derived from an engine snapshot.
+class BeatPosition {
+  BeatPosition(EngineStatus s)
+    : bar = (s.position / s.barFrames).floor(),
+      beatInBar = ((s.position / s.beatFrames).floor() % s.beatsPerBar),
+      beatPhase = (s.position / s.beatFrames) - (s.position / s.beatFrames).floor();
+
+  /// 0-based bar index; negative during the count-in.
+  final int bar;
+  final int beatInBar;
+
+  /// 0..1 progress through the current beat.
+  final double beatPhase;
+}
