@@ -15,7 +15,13 @@ constexpr float kPunchFadeSeconds = 0.004f;
 constexpr float kSeamFadeSeconds = 0.008f;
 constexpr float kHalfPi = 1.57079632679f;
 constexpr float kPi = 3.14159265359f;
-constexpr float kStopFadeSeconds = 0.010f;
+constexpr float kStopFadeSeconds = 0.010f;   // Stop, and clearing a playing track
+constexpr float kStartFadeSeconds = 0.002f;  // short: keeps the downbeat's attack
+
+// Raised-cosine envelope over `frames` steps: step 1 → just above 0, `frames` → 1.
+float riseCurve(int step, int frames) {
+  return 0.5f * (1.0f - std::cos(kPi * static_cast<float>(step) / static_cast<float>(frames)));
+}
 
 size_t nextPowerOfTwo(size_t v) {
   size_t p = 1;
@@ -43,6 +49,7 @@ Engine::Engine(const EngineConfig& config) : config_(config) {
   history_.assign(historySize_ * static_cast<size_t>(std::max(usableInputs, 1)), 0.0f);
 
   stopFadeFrames_ = std::max(1, static_cast<int>(std::lround(kStopFadeSeconds * sr)));
+  startFadeFrames_ = std::max(1, static_cast<int>(std::lround(kStartFadeSeconds * sr)));
   seamFrames_ = std::clamp(static_cast<int>(std::lround(kSeamFadeSeconds * sr)), 1, kMaxSeamFrames);
   gainSmoothing_ = 1.0f - std::exp(-1.0f / (0.005f * static_cast<float>(sr)));
   meterDecay_ = std::exp(-1.0f / (0.3f * static_cast<float>(sr)));
@@ -98,12 +105,14 @@ void Engine::handle(const Command& cmd) {
       if (t) tap(*t);
       break;
     case CommandType::TrackClear:
-      if (t) {
-        t->state = LOOPER_TRACK_EMPTY;
-        t->writing = false;
-        t->length = 0;
-        t->muted = false;
-        resetLayer(*t);
+      if (!t) break;
+      if (playing_ && t->state == LOOPER_TRACK_PLAYING && t->gain > 1e-4f) {
+        // Audible: fade it out first (processFrame clears it at the end).
+        t->clearFadeLeft = stopFadeFrames_;
+        t->overdubbing = false;
+        t->odWriting = false;
+      } else {
+        clearTrack(*t);
       }
       break;
     case CommandType::TrackOverdub:
@@ -195,6 +204,7 @@ void Engine::tap(Track& t) {
 
 void Engine::beginPlaying(Track& t) {
   t.state = LOOPER_TRACK_PLAYING;
+  t.fadeInLeft = startFadeFrames_;
   t.gain = t.muted ? 0.0f : t.volume;  // no fade-in: keep the downbeat's attack
   t.uncommitted = (t.length + (int64_t{1} << kChunkShift) - 1) >> kChunkShift;
   t.layerVersion += 1;
@@ -303,6 +313,29 @@ void Engine::startTransport(int64_t position) {
   playing_ = true;
   position_ = position;
   lastBeat_ = INT64_MIN;
+  for (auto& t : tracks_) {
+    if (t.state == LOOPER_TRACK_PLAYING) t.fadeInLeft = startFadeFrames_;
+  }
+}
+
+void Engine::clearTrack(Track& t) {
+  t.state = LOOPER_TRACK_EMPTY;
+  t.writing = false;
+  t.length = 0;
+  t.muted = false;
+  t.clearFadeLeft = 0;
+  t.fadeInLeft = 0;
+  resetLayer(t);
+}
+
+// Commands wait while something is fading out, so they act on the state
+// that follows (e.g. a new take after Stop, or after a clear).
+bool Engine::deferCommands() const {
+  if (stopping_) return true;
+  for (const auto& t : tracks_) {
+    if (t.clearFadeLeft > 0) return true;
+  }
+  return false;
 }
 
 // Cutting the output dead clicks, and cutting writes short would leave an
@@ -365,7 +398,7 @@ void Engine::finishOnStop(Track& t) {
 void Engine::process(const float* input, float* output, uint32_t frames) {
   Command cmd;
   // While stopping, later commands (Play, a new recording...) wait their turn.
-  while (!stopping_ && commands_.pop(cmd)) {
+  while (!deferCommands() && commands_.pop(cmd)) {
     handle(cmd);
     ++handled_;
   }
@@ -420,19 +453,27 @@ void Engine::processFrame(const float* in, float* out) {
         t.layerGain += ((layerOn ? 1.0f : 0.0f) - t.layerGain) * gainSmoothing_;
         const size_t idx = static_cast<size_t>(floorMod(p - t.recStart, t.length));
         commitChunk(t, idx);
-        const float s = (t.buffer[idx] + t.layer[idx] * t.layerGain) * t.gain;
+        float envelope = 1.0f;
+        if (t.fadeInLeft > 0) {
+          envelope = riseCurve(startFadeFrames_ - t.fadeInLeft + 1, startFadeFrames_);
+          --t.fadeInLeft;
+        }
+        bool clearNow = false;
+        if (t.clearFadeLeft > 0) {
+          envelope *= 1.0f - riseCurve(stopFadeFrames_ - t.clearFadeLeft + 1, stopFadeFrames_);
+          clearNow = --t.clearFadeLeft == 0;
+        }
+        const float s = (t.buffer[idx] + t.layer[idx] * t.layerGain) * t.gain * envelope;
         mix += s;
         t.peak = std::max(std::fabs(s), t.peak * meterDecay_);
+        if (clearNow) clearTrack(t);
       } else {
         t.peak *= meterDecay_;
       }
 
       const bool live = t.state == LOOPER_TRACK_ARMED || t.state == LOOPER_TRACK_RECORDING ||
                         t.overdubbing;
-      if (monitoring_ && live && !(monitoredChannels & (1u << t.inputChannel))) {
-        monitoredChannels |= 1u << t.inputChannel;
-        monitor += inputSample(t.inputChannel);
-      }
+      if (monitoring_ && live) monitoredChannels |= 1u << t.inputChannel;
     }
 
     const int64_t beat = floorDiv(p * beatsPerBar_, bar_);
@@ -445,6 +486,13 @@ void Engine::processFrame(const float* in, float* out) {
     ++position_;
   } else {
     for (auto& t : tracks_) t.peak *= meterDecay_;
+  }
+
+  // Input monitoring fades in and out per channel instead of switching.
+  for (int ch = 0; ch < usable; ++ch) {
+    const float target = (monitoredChannels & (1u << ch)) ? 1.0f : 0.0f;
+    monitorGain_[ch] += (target - monitorGain_[ch]) * gainSmoothing_;
+    if (monitorGain_[ch] > 1e-5f) monitor += inputSample(ch) * monitorGain_[ch];
   }
 
   const float click = metronomeSample();
@@ -519,12 +567,14 @@ void Engine::closeSeam(Track& t) {
 }
 
 float Engine::metronomeSample() {
+  // Muting the click mid-tick fades it rather than cutting it.
+  metronomeGain_ += ((metronomeOn_ ? metronomeVolume_ : 0.0f) - metronomeGain_) * gainSmoothing_;
   if (clickEnv_ < 1e-4f) return 0.0f;
   const float s = std::sin(clickPhase_) * clickEnv_;
   clickPhase_ += kTwoPi * clickFreq_ / static_cast<float>(config_.sampleRate);
   if (clickPhase_ > kTwoPi) clickPhase_ -= kTwoPi;
   clickEnv_ *= clickDecay_;
-  return metronomeOn_ ? s * metronomeVolume_ : 0.0f;
+  return s * metronomeGain_;
 }
 
 void Engine::publishStatus() {
@@ -558,7 +608,7 @@ void Engine::publishStatus() {
     ts.rec_start = t.recStart;
     ts.rec_end = t.recEnd;
     ts.length = t.length;
-    ts.busy = (t.writing || t.odWriting || t.overdubbing ||
+    ts.busy = (t.writing || t.odWriting || t.overdubbing || t.clearFadeLeft > 0 ||
                (playing_ && t.uncommitted > 0 && t.layerState != LOOPER_LAYER_NONE))
                   ? 1
                   : 0;

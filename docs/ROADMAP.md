@@ -13,7 +13,7 @@
 - [ ] Quantized mute/unmute (on next bar), optional
 - [x] Crossfade at the loop seam into the pre-roll (no clicks, downbeat untouched)
 - [x] Stop fades the output out and lets layers punch out cleanly
-- [ ] Fade out when clearing a track that is playing
+- [x] No clicks anywhere: fades on clear, loop start, monitoring, click mute, device change and quit
 - [ ] Automatic latency calibration (loopback ping)
 - [ ] MIDI: foot-switch / controller mapping (MIDI learn)
 - [ ] Per-track pan, output routing

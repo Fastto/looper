@@ -132,12 +132,22 @@ class LooperController extends ChangeNotifier {
     playbackName = playback ?? playbackName;
     bufferFrames = buffer ?? bufferFrames;
     _save();
+    await stopAndSettle();
     await sessions.flush();
     _waveforms.clear();
     _layerHistory.clear();
     _open();
     notifyListeners();
     await sessions.reloadAfterDeviceChange();
+  }
+
+  /// Stops the transport and waits for its fade-out, so closing the audio
+  /// device (device change, quit) never cuts a sound off mid-wave.
+  Future<void> stopAndSettle() async {
+    if (!status.deviceRunning || !_engine.status().playing) return;
+    _engine.stop();
+    await waitIdle();
+    await Future<void>.delayed(const Duration(milliseconds: 80));
   }
 
   /// Waits until the audio thread has applied every command sent so far.

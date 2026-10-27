@@ -494,6 +494,99 @@ void testStopFadesOut() {
   CHECK(std::fabs(buf[2000] - 0.5f) < 1e-6f);   // base only from the press on
 }
 
+
+void testNoClicksAnywhere() {
+  std::printf("no output jumps: clear, play, loop start, monitoring, click mute\n");
+  // Largest sample-to-sample jump in out[from, to).
+  auto maxJump = [](const std::vector<float>& out, size_t from, size_t to) {
+    float worst = 0.0f;
+    for (size_t i = std::max<size_t>(from, 1); i < to && i < out.size(); ++i) {
+      worst = std::max(worst, std::fabs(out[i] - out[i - 1]));
+    }
+    return worst;
+  };
+  auto steady = [](int64_t) { return 0.8f; };
+  auto silence = [](int64_t) { return 0.0f; };
+
+  Rig rig;
+  // 1. A loop holding a steady 0.8 starts playing at the end of its take:
+  //    it rises over 2 ms (2 frames here) instead of jumping to 0.8.
+  rig.send(CommandType::TrackLengthMode, 0, 2);
+  rig.send(CommandType::TrackTap, 0);
+  rig.run(1, steady);                       // the tap starts the count-in
+  rig.run(kBar - rig.position(), steady);   // next frame: the loop's first
+  size_t mark = rig.out.size();
+  rig.run(10, silence);
+  CHECK(rig.status().tracks[0].state == LOOPER_TRACK_PLAYING);
+  CHECK(rig.out[mark] > 0.0f && rig.out[mark] < 0.8f);
+  CHECK(std::fabs(rig.out[mark + 5] - 0.8f) < 1e-6f);
+  CHECK(maxJump(rig.out, mark - 1, mark + 10) < 0.8f * 0.6f);
+
+  // 2. Play from stopped: the same short rise.
+  rig.send(CommandType::Stop);
+  rig.run(kStopFrames, silence);
+  rig.send(CommandType::Play);
+  mark = rig.out.size();
+  rig.run(10, silence);
+  CHECK(rig.out[mark] < 0.8f);
+  CHECK(maxJump(rig.out, mark - 1, mark + 10) < 0.8f * 0.6f);
+
+  // 3. Clearing a playing track fades it out over 10 ms, then empties it;
+  //    a tap pressed meanwhile waits and records into the cleared track.
+  rig.run(100, silence);
+  rig.send(CommandType::TrackClear, 0);
+  rig.send(CommandType::TrackTap, 0);
+  mark = rig.out.size();
+  rig.run(5, silence);
+  CHECK(rig.status().tracks[0].state == LOOPER_TRACK_PLAYING);  // still fading
+  CHECK(rig.status().tracks[0].busy == 1);
+  rig.run(10, silence);
+  CHECK(std::fabs(rig.out[mark + 9]) < 1e-6f);
+  CHECK(maxJump(rig.out, mark - 1, mark + 12) < 0.8f * 0.3f);
+  CHECK(rig.status().tracks[0].state != LOOPER_TRACK_EMPTY);  // the queued tap re-armed it
+  CHECK(rig.status().tracks[0].layer_state == LOOPER_LAYER_NONE);
+
+  // A muted (silent) track clears at once.
+  Rig quiet;
+  quiet.send(CommandType::TrackLengthMode, 0, 2);
+  quiet.send(CommandType::TrackTap, 0);
+  quiet.run(2 * kBar + 10, steady);
+  quiet.send(CommandType::TrackMute, 0, 1);
+  quiet.run(200, silence);
+  quiet.send(CommandType::TrackClear, 0);
+  quiet.run(1, silence);
+  CHECK(quiet.status().tracks[0].state == LOOPER_TRACK_EMPTY);
+
+  // 4. Software monitoring ramps in when a track is armed and out when the
+  //    take ends (the steady input is on the monitored channel).
+  Rig mon;
+  mon.send(CommandType::SetMonitoring, 0, 1);
+  mon.send(CommandType::TrackLengthMode, 0, 2);
+  mon.send(CommandType::TrackTap, 0);
+  mark = mon.out.size();
+  mon.run(40, steady);
+  CHECK(mon.out[mark] > 0.0f && mon.out[mark] < 0.8f * 0.3f);
+  CHECK(std::fabs(mon.out[mark + 39] - 0.8f) < 1e-2f);
+  CHECK(maxJump(mon.out, mark - 1, mark + 40) < 0.8f * 0.3f);
+  mon.run(kBar - mon.position(), steady);
+  mark = mon.out.size();
+  mon.run(60, steady);  // the loop takes over while the monitor fades out
+  CHECK(mon.status().tracks[0].state == LOOPER_TRACK_PLAYING);
+  CHECK(maxJump(mon.out, mark - 1, mark + 60) < 0.8f * 0.6f);
+  CHECK(std::fabs(mon.out[mark + 59] - 0.8f) < 1e-2f);  // loop only; monitor gone
+
+  // 5. Muting the click mid-tick fades it.
+  Rig click;
+  click.send(CommandType::SetMetronome, 0, 1, 1.0);
+  click.send(CommandType::Play);
+  click.run(30, silence);
+  click.send(CommandType::SetMetronome, 0, 0, 1.0);
+  mark = click.out.size();
+  click.run(60, silence);
+  CHECK(std::fabs(click.out[mark]) > 1e-4f);  // not cut dead
+  CHECK(std::fabs(click.out[mark + 59]) < 1e-3f);
+}
+
 }  // namespace
 
 int main() {
@@ -507,6 +600,7 @@ int main() {
   testExportImport();
   testSeamCrossfade();
   testStopFadesOut();
+  testNoClicksAnywhere();
   if (failures) {
     std::printf("%d check(s) failed\n", failures);
     return 1;

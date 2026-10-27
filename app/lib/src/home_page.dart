@@ -47,6 +47,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     // Never lose loops: save before the app quits or goes to the background.
     _lifecycle = AppLifecycleListener(
       onExitRequested: () async {
+        await _c.stopAndSettle();
         await _c.sessions.flush();
         return AppExitResponse.exit;
       },

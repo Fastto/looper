@@ -2,6 +2,7 @@
 
 * Loop seam crossfade: the last 8 ms fade into the audio played just before the downbeat.
 * Stop fades the output out over 10 ms and waits for latency-delayed layer tails; queued commands run after.
+* Clearing a playing track fades it out; loops fade in over 2 ms when they start; software monitoring and the click are smoothed.
 
 ## 0.3.0
 

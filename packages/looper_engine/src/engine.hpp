@@ -107,6 +107,9 @@ class Engine {
     // crossfaded into the end of the loop when it is complete (closeSeam).
     std::array<float, kMaxSeamFrames> preroll{};
     int prerollFrames = 0;
+    // Short envelopes so a loop never starts or vanishes with a jump.
+    int fadeInLeft = 0;     // frames left of the start fade-in
+    int clearFadeLeft = 0;  // frames left before a requested clear happens
     int inputChannel = 0;
     int lengthMode = 0;  // 0 = auto, N = fixed N half-bars
     bool muted = false;
@@ -135,6 +138,8 @@ class Engine {
   void handle(const Command& cmd);
   void tap(Track& t);
   void resetLayer(Track& t);
+  void clearTrack(Track& t);
+  bool deferCommands() const;
   void beginPlaying(Track& t);
   // Whether sample `i` of `layer` is audible (generation-aware, see commitChunk).
   bool layerAudible(const Track& t, size_t i, LooperLayerState state) const;
@@ -204,6 +209,9 @@ class Engine {
   bool stopping_ = false;
   int64_t stopPressPosition_ = 0;
   int stopFadeFrames_ = 0;
+  int startFadeFrames_ = 0;
+  float monitorGain_[kMaxInputs] = {};
+  float metronomeGain_ = 0.0f;
   int stopFrame_ = 0;
   int64_t stopFramesLeft_ = 0;
   float gainSmoothing_ = 0.0f;

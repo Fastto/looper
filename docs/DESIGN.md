@@ -84,7 +84,27 @@ recordings are then closed as of the moment Stop was pressed. The UI shows
 "stopped" at once; commands sent in those few tens of ms (Play, a new
 recording) wait in the queue and run right after.
 
-### 3.4 Overdub and undo
+### 3.4 No clicks, anywhere
+
+Every change that could make the output jump has an envelope. The rule for
+new features: nothing may switch audio on or off in a single sample.
+
+| Event | Envelope |
+|-------|----------|
+| Loop wraps | 8 ms crossfade of the tail into the pre-roll (§3.3) |
+| Loop starts (take closed, Play, count-in, session load) | 2 ms raised-cosine fade-in — short, so the downbeat keeps its attack |
+| Stop | 10 ms fade-out of the whole output; transport runs on until layer tails land |
+| Clear a playing track | 10 ms fade-out, then clear |
+| Mute / unmute, volume, undo / redo layer | 5 ms one-pole smoothing |
+| Overdub punch-in / punch-out | 4 ms fades on the recorded layer |
+| Software monitoring on / off (arm, take end, toggle) | 5 ms per input channel |
+| Click mute / volume | 5 ms smoothing |
+| Audio device change, quit | the app stops (with its fade) and waits before closing the device |
+
+While a fade-out is running (Stop, clear), new commands wait in the queue
+for those few ms, so they act on the state that follows.
+
+### 3.5 Overdub and undo
 
 Overdub ("Layer") records on top of a playing loop. Unlike the first
 recording it is **not quantized**: it punches in and out the moment you
