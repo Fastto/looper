@@ -61,7 +61,22 @@ Each track has one big button. Tapping it does the "next obvious thing":
 * **MUTED** — dimmed; keeps playing silently so it re-enters in phase.
 * **OVERDUB** — orange; you are recording a layer on top of the loop.
 
-### 3.3 Overdub and undo
+### 3.3 The loop seam
+
+When a loop wraps, its last sample is followed by its first, and the two
+were never next to each other in the performance, so the wrap clicks. The
+fix used by hardware loopers: when recording starts, the engine keeps the
+few milliseconds played **just before** the downbeat (the pre-roll, taken
+from the input history, so it works for late presses too). When the take
+is complete, the last 8 ms of the loop are crossfaded (equal-power) into
+that pre-roll. The loop now ends exactly the way the performance led into
+the downbeat, so the wrap is continuous. The downbeat itself is never
+touched, so the attack of the first hit keeps its punch.
+
+Overdub layers need nothing extra: a layer that runs across the seam is
+recorded continuously in real time, and punch-in/out have their own fades.
+
+### 3.4 Overdub and undo
 
 Overdub ("Layer") records on top of a playing loop. Unlike the first
 recording it is **not quantized**: it punches in and out the moment you

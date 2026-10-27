@@ -11,7 +11,7 @@
 - [x] Overdub (record on top of a playing loop) with one-level undo/redo per track
 - [ ] Overdub feedback (fade older layers as new ones go on)
 - [ ] Quantized mute/unmute (on next bar), optional
-- [ ] Tiny crossfade at the loop seam to remove clicks
+- [x] Crossfade at the loop seam into the pre-roll (no clicks, downbeat untouched)
 - [ ] Automatic latency calibration (loopback ping)
 - [ ] MIDI: foot-switch / controller mapping (MIDI learn)
 - [ ] Per-track pan, output routing

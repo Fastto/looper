@@ -393,6 +393,51 @@ void testExportImport() {
   CHECK(rig.engine.importLoop(3, half.data(), kBar / 2, 0) == -2);
 }
 
+
+void testSeamCrossfade() {
+  std::printf("loop seam is crossfaded into the pre-roll; the downbeat is untouched\n");
+  const int64_t latency = 13;
+  Rig rig(latency);
+  // A sine whose period does not divide the loop: without a crossfade the
+  // wrap from the last sample to the first would jump.
+  const double freq = 7.3;  // Hz at the 1 kHz test rate
+  const double step = 2 * 3.14159265358979 * freq / kRate;
+  const int64_t d0 = rig.deviceFrame + kBar;  // device frame of transport 0 (after count-in)
+  auto sine = [&](int64_t d) {
+    // What the player plays at musical time m arrives `latency` frames later.
+    return static_cast<float>(std::sin(static_cast<double>(d - latency - d0) * step));
+  };
+  rig.send(CommandType::TrackLengthMode, 0, 2);  // one bar
+  rig.send(CommandType::TrackTap, 0);
+  rig.run(kBar + kBar + 50, sine);
+  CHECK(rig.status().tracks[0].state == LOOPER_TRACK_PLAYING);
+  CHECK(rig.status().tracks[0].busy == 0);
+
+  std::vector<float> loop(static_cast<size_t>(kBar));
+  CHECK(rig.engine.exportLoop(0, loop.data(), kBar) == kBar);
+  auto played = [&](int64_t m) { return static_cast<float>(std::sin(static_cast<double>(m) * step)); };
+  const float maxStep = static_cast<float>(step) * 1.05f;
+
+  CHECK(std::fabs(loop[0] - played(0)) < 1e-5f);              // downbeat untouched
+  CHECK(std::fabs(loop[kBar / 2] - played(kBar / 2)) < 1e-5f);  // body untouched
+  const float rawJump = std::fabs(played(kBar - 1) - played(0));
+  CHECK(rawJump > 10 * maxStep);                               // the test would catch a click
+  CHECK(std::fabs(loop[kBar - 1] - loop[0]) < maxStep);        // ...but the seam is smooth
+  // The last 8 ms (8 frames here) follow equal-power curves from the take
+  // into the pre-roll, i.e. what was played just before the downbeat.
+  const int fade = 8;
+  for (int k = 0; k < fade; ++k) {
+    const double x = (k + 0.5) / fade * 3.14159265358979 / 2;
+    const float expected = static_cast<float>(played(kBar - fade + k) * std::cos(x) +
+                                              played(-fade + k) * std::sin(x));
+    CHECK(std::fabs(loop[kBar - fade + k] - expected) < 1e-5f);
+  }
+  CHECK(std::fabs(loop[kBar - fade - 1] - played(kBar - fade - 1)) < 1e-5f);  // fade starts there
+  for (int64_t i = kBar - 20; i < kBar - 1; ++i) {
+    CHECK(std::fabs(loop[i + 1] - loop[i]) < 3 * maxStep);     // and the fade itself is smooth
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -404,6 +449,7 @@ int main() {
   testStopKeepsWholeBars();
   testOverdubUndoRedo();
   testExportImport();
+  testSeamCrossfade();
   if (failures) {
     std::printf("%d check(s) failed\n", failures);
     return 1;

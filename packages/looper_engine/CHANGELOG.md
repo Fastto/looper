@@ -1,3 +1,7 @@
+## 0.4.0
+
+* Loop seam crossfade: the last 8 ms fade into the audio played just before the downbeat.
+
 ## 0.3.0
 
 * Export/import of loops for sessions; per-track `busy` flag and command acknowledgement counter.

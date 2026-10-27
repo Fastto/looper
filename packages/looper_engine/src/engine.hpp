@@ -2,6 +2,7 @@
 // so it can be driven offline by tests. See docs/DESIGN.md.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -86,6 +87,8 @@ class Engine {
   // Overdub layers are merged into the base lazily, one chunk at a time,
   // the first time playback or recording touches a chunk (see commitChunk).
   static constexpr int kChunkShift = 8;
+  // Upper bound for the loop-seam crossfade (8 ms even at 192 kHz).
+  static constexpr int kMaxSeamFrames = 2048;
   static constexpr int kGenerationHistory = 256;
 
   struct Track {
@@ -100,6 +103,10 @@ class Engine {
     bool writing = false;
     bool writeStarted = false;
     int64_t written = 0;
+    // The audio just before the downbeat, captured when recording starts and
+    // crossfaded into the end of the loop when it is complete (closeSeam).
+    std::array<float, kMaxSeamFrames> preroll{};
+    int prerollFrames = 0;
     int inputChannel = 0;
     int lengthMode = 0;  // 0 = auto, N = fixed N half-bars
     bool muted = false;
@@ -144,6 +151,7 @@ class Engine {
   void recomputeGrid();
   void processFrame(const float* in, float* out);
   void writeRecording(Track& t, int64_t musicalPos, float sample);
+  void closeSeam(Track& t);
   float metronomeSample();
   void publishStatus();
 
@@ -186,6 +194,7 @@ class Engine {
   float clickEnv_ = 0.0f;
   float clickDecay_ = 0.0f;
 
+  int seamFrames_ = 0;
   float gainSmoothing_ = 0.0f;
   float meterDecay_ = 0.0f;
   float inputPeaks_[kMaxInputs] = {};

@@ -12,6 +12,8 @@ namespace {
 
 constexpr float kTwoPi = 6.28318530718f;
 constexpr float kPunchFadeSeconds = 0.004f;
+constexpr float kSeamFadeSeconds = 0.008f;
+constexpr float kHalfPi = 1.57079632679f;
 
 size_t nextPowerOfTwo(size_t v) {
   size_t p = 1;
@@ -38,6 +40,7 @@ Engine::Engine(const EngineConfig& config) : config_(config) {
   const int usableInputs = std::min(config_.inputChannels, kMaxInputs);
   history_.assign(historySize_ * static_cast<size_t>(std::max(usableInputs, 1)), 0.0f);
 
+  seamFrames_ = std::clamp(static_cast<int>(std::lround(kSeamFadeSeconds * sr)), 1, kMaxSeamFrames);
   gainSmoothing_ = 1.0f - std::exp(-1.0f / (0.005f * static_cast<float>(sr)));
   meterDecay_ = std::exp(-1.0f / (0.3f * static_cast<float>(sr)));
   clickDecay_ = std::exp(-1.0f / (0.012f * static_cast<float>(sr)));
@@ -158,6 +161,7 @@ void Engine::tap(Track& t) {
       t.writing = true;
       t.writeStarted = false;
       t.written = 0;
+      t.prerollFrames = 0;
       t.muted = false;
       t.state = position_ >= t.recStart ? LOOPER_TRACK_RECORDING : LOOPER_TRACK_ARMED;
       break;
@@ -330,6 +334,7 @@ void Engine::finishOnStop(Track& t) {
     const int64_t from = std::clamp<int64_t>(t.written, 0, t.length);
     std::fill(t.buffer.begin() + from, t.buffer.begin() + t.length, 0.0f);
     t.writing = false;
+    closeSeam(t);
   }
 }
 
@@ -429,6 +434,7 @@ void Engine::writeRecording(Track& t, int64_t musicalPos, float sample) {
   if (musicalPos < t.recStart) return;
   if (t.recEnd >= 0 && musicalPos >= t.recEnd) {
     t.writing = false;
+    closeSeam(t);
     return;
   }
   const int64_t idx = musicalPos - t.recStart;
@@ -447,9 +453,35 @@ void Engine::writeRecording(Track& t, int64_t musicalPos, float sample) {
       t.buffer[static_cast<size_t>(idx - missing + k)] =
           historyAt(t.inputChannel, deviceFrame_ - missing + k);
     }
+    // Keep what was played just before the downbeat for the loop seam.
+    const int64_t downbeatDevice = deviceFrame_ - idx;
+    t.prerollFrames = seamFrames_;
+    for (int k = 0; k < seamFrames_; ++k) {
+      t.preroll[static_cast<size_t>(k)] =
+          historyAt(t.inputChannel, downbeatDevice - seamFrames_ + k);
+    }
   }
   t.buffer[static_cast<size_t>(idx)] = sample;
   t.written = idx + 1;
+}
+
+// The loop's last sample is followed by its first one, but in the original
+// performance the first one was preceded by the pre-roll. Crossfading the end
+// of the loop into that pre-roll makes the wrap continuous (no click) while
+// leaving the downbeat itself untouched. Equal-power curves, because the two
+// signals are only loosely correlated.
+void Engine::closeSeam(Track& t) {
+  const int64_t len = t.recEnd - t.recStart;
+  if (len <= 0 || t.prerollFrames <= 0) return;
+  const int fade = static_cast<int>(std::min<int64_t>(t.prerollFrames, len / 4));
+  if (fade <= 0) return;
+  float* tail = t.buffer.data() + (len - fade);
+  const float* pre = t.preroll.data() + (t.prerollFrames - fade);
+  for (int k = 0; k < fade; ++k) {
+    const float x = (static_cast<float>(k) + 0.5f) / static_cast<float>(fade);
+    tail[k] = tail[k] * std::cos(x * kHalfPi) + pre[k] * std::sin(x * kHalfPi);
+  }
+  t.prerollFrames = 0;
 }
 
 float Engine::metronomeSample() {
