@@ -13,6 +13,7 @@
 - [x] Quantized mute/unmute (next beat or bar), optional
 - [x] Crossfade at the loop seam into the pre-roll (no clicks, downbeat untouched)
 - [x] Stop fades the output out and lets layers punch out cleanly
+- [x] Trim: shift the loop start by ⅛ / ¼ / bar, cut or add whole bars at the end
 - [x] No clicks anywhere: fades on clear, loop start, monitoring, click mute, device change and quit
 - [x] Automatic latency calibration (loopback pulses + cross-correlation)
 - [ ] MIDI: foot-switch / controller mapping (MIDI learn)

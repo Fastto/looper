@@ -53,6 +53,14 @@ class TrackStatus {
     required this.busy,
     required this.pendingMute,
     required this.pan,
+    required this.trimLocked,
+    required this.trimEighths,
+    required this.trimMinEighths,
+    required this.trimMaxEighths,
+    required this.trimMaxBars,
+    required this.origin,
+    required this.windowStart,
+    required this.audioEnd,
     required this.recStart,
     required this.recEnd,
     required this.length,
@@ -70,6 +78,14 @@ class TrackStatus {
     busy: false,
     pendingMute: null,
     pan: 0,
+    trimLocked: false,
+    trimEighths: 0,
+    trimMinEighths: 0,
+    trimMaxEighths: 0,
+    trimMaxBars: 0,
+    origin: 0,
+    windowStart: 0,
+    audioEnd: 0,
     recStart: 0,
     recEnd: -1,
     length: 0,
@@ -96,6 +112,22 @@ class TrackStatus {
 
   /// -1 (left) .. 1 (right).
   final double pan;
+
+  /// Trim: the loop is a window over the recording. Locked after layering.
+  final bool trimLocked;
+
+  /// Start shift in eighth notes from the original downbeat, and its range.
+  final int trimEighths;
+  final int trimMinEighths;
+  final int trimMaxEighths;
+
+  /// Longest allowed length in bars; 0 when the length can't change.
+  final int trimMaxBars;
+
+  /// Recording frames: original downbeat, loop start, end of recorded audio.
+  final int origin;
+  final int windowStart;
+  final int audioEnd;
 
   bool get overdubbing => layerState == LayerState.recording;
   bool get canUndo => layerState == LayerState.active || layerState == LayerState.recording;
@@ -265,6 +297,8 @@ class LooperEngine {
   void trackSetVolume(int track, double volume) => _bindings.looper_track_set_volume(track, volume);
   void trackSetInput(int track, int channel) => _bindings.looper_track_set_input(track, channel);
   void trackSetPan(int track, double pan) => _bindings.looper_track_set_pan(track, pan);
+  void trackShiftStart(int track, int eighths) => _bindings.looper_track_shift_start(track, eighths);
+  void trackTrimBars(int track, int bars) => _bindings.looper_track_trim_bars(track, bars);
   void trackSetLengthMode(int track, int halfBars) => _bindings.looper_track_set_length_mode(track, halfBars);
 
   EngineStatus status() {
@@ -301,6 +335,14 @@ class LooperEngine {
           busy: t.busy != 0,
           pendingMute: t.pending_mute < 0 ? null : t.pending_mute != 0,
           pan: t.pan,
+          trimLocked: t.trim_locked != 0,
+          trimEighths: t.trim_eighths,
+          trimMinEighths: t.trim_min_eighths,
+          trimMaxEighths: t.trim_max_eighths,
+          trimMaxBars: t.trim_max_bars,
+          origin: t.origin,
+          windowStart: t.window_start,
+          audioEnd: t.audio_end,
           recStart: t.rec_start,
           recEnd: t.rec_end,
           length: t.length,
@@ -334,22 +376,59 @@ class LooperEngine {
     }
   }
 
-  /// Loads audio into an empty track, resampled to [targetFrames], playing in
-  /// time from bar 1. Returns 0 on success, -1 if busy, -2 for a bad length.
-  int trackImport(int track, Float32List data, int targetFrames) {
-    if (data.isEmpty) return -2;
-    final buffer = calloc<Float>(data.length);
+  /// The whole recording behind an untrimmed-locked track (pre-roll
+  /// included). Null while busy; empty if there is none or the trim is locked.
+  Float32List? trackExportRecording(int track) {
+    if (track < 0 || track >= maxTracks) return Float32List(0);
+    _bindings.looper_get_status(_status);
+    final capacity = _status.ref.tracks[track].audio_end.clamp(1, 1 << 40);
+    final buffer = calloc<Float>(capacity);
     try {
-      buffer.asTypedList(data.length).setAll(0, data);
-      return _bindings.looper_track_import(track, buffer, data.length, targetFrames);
+      final n = _bindings.looper_track_export_recording(track, buffer, capacity);
+      if (n == -1) return null;
+      if (n <= 0) return Float32List(0);
+      return Float32List.fromList(buffer.asTypedList(n));
     } finally {
       calloc.free(buffer);
     }
   }
 
-  /// Peak envelope of a playing track's loop, [bins] values in 0..1.
-  List<double> waveform(int track, int bins) {
-    final n = _bindings.looper_get_waveform(track, _wave, bins.clamp(1, _maxWaveBins));
+  /// Loads audio into an empty track, resampled to [targetFrames], playing in
+  /// time from bar 1. With [locked] the audio is the loop itself; otherwise it
+  /// is a whole recording and [origin], [trimEighths] and [length] restore its
+  /// trim window. Returns 0 on success, -1 if busy, -2 for bad lengths.
+  int trackImport(
+    int track,
+    Float32List data,
+    int targetFrames, {
+    bool locked = true,
+    int origin = 0,
+    int trimEighths = 0,
+    int length = 0,
+  }) {
+    if (data.isEmpty) return -2;
+    final buffer = calloc<Float>(data.length);
+    try {
+      buffer.asTypedList(data.length).setAll(0, data);
+      return _bindings.looper_track_import(
+        track,
+        buffer,
+        data.length,
+        targetFrames,
+        locked ? 1 : 0,
+        origin,
+        trimEighths,
+        length,
+      );
+    } finally {
+      calloc.free(buffer);
+    }
+  }
+
+  /// Peak envelope of recording frames [from, to) of a playing track,
+  /// [bins] values in 0..1.
+  List<double> waveform(int track, int from, int to, int bins) {
+    final n = _bindings.looper_get_waveform(track, from, to, _wave, bins.clamp(1, _maxWaveBins));
     return List.generate(n, (i) => _wave[i]);
   }
 }

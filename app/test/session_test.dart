@@ -118,6 +118,25 @@ void main() {
       expect(await store.list(), isEmpty);
     });
 
+    test('reads trim windows (v2) and treats v1 loops as locked', () {
+      const trimmed = SessionTrack(
+        file: 'track-1.wav',
+        halfBars: 8,
+        locked: false,
+        originBars: 0.5,
+        trimEighths: 3,
+      );
+      final json = trimmed.toJson();
+      expect(json['trim'], {'originBars': 0.5, 'eighths': 3});
+      final back = SessionTrack.fromJson(json);
+      expect(back.locked, isFalse);
+      expect(back.originBars, 0.5);
+      expect(back.trimEighths, 3);
+      final v1 = SessionTrack.fromJson({'file': 'track-1.wav', 'halfBars': 4});
+      expect(v1.locked, isTrue);
+      expect(const SessionTrack(file: 'x.wav', halfBars: 2).toJson().containsKey('trim'), isFalse);
+    });
+
     test('refuses sessions from a newer app version', () {
       expect(
         () => SessionData.fromJson({'format': SessionData.format, 'version': 99}),

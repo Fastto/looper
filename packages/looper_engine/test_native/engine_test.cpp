@@ -719,6 +719,169 @@ void testLatencyCalibration() {
   CHECK(rig.status().calibration == 2);  // unchanged, not measuring
 }
 
+
+void testTrim() {
+  std::printf("trim: shift the start by eighths, cut/extend whole bars, pad with silence, lock on layer\n");
+  Rig rig;
+  rig.send(CommandType::Play);
+  rig.run(1, [](int64_t) { return 0.0f; });
+  const int64_t d0 = rig.deviceFrame - 1;  // transport t <-> device d0 + t
+  const int64_t eighth = kBar / 8;         // 4/4: an eighth note is 500 frames here
+  // The take: bar 1 silent (picking up the instrument), bars 2-5 played with a
+  // hit on each downbeat and a softer one an eighth later, and a stray noise
+  // early in bar 6 that made the loop one bar too long.
+  auto player = [&](int64_t d) {
+    const int64_t m = d - d0;
+    if (m >= kBar && m < 5 * kBar && m % kBar == 0) return 1.0f;
+    if (m >= kBar && m < 5 * kBar && m % kBar == eighth) return 0.5f;
+    if (m == 5 * kBar + 100) return 0.3f;
+    return 0.0f;
+  };
+  rig.send(CommandType::TrackTap, 0);  // late press at transport 1: starts at bar 1
+  rig.run(5 * kBar + 1000 - rig.position(), player);
+  rig.send(CommandType::TrackTap, 0);  // stop well into bar 6
+  rig.run(6 * kBar + 10 - rig.position(), player);
+  const LooperTrackStatus* ts = &rig.status().tracks[0];
+  CHECK(ts->state == LOOPER_TRACK_PLAYING);
+  CHECK(ts->length == 6 * kBar);
+  CHECK(ts->trim_locked == 0 && ts->trim_eighths == 0);
+  CHECK(ts->trim_min_eighths < 0);  // the pre-roll allows starting earlier
+  CHECK(ts->trim_max_bars == 6);
+
+  std::vector<float> loop(static_cast<size_t>(rig.engine.capacity()));
+  auto exportLoop = [&] { return rig.engine.exportLoop(0, loop.data(), static_cast<int64_t>(loop.size())); };
+
+  // Cut the silent bar: start one bar (8 eighths) later. Length stays 6 bars;
+  // the end is padded with silence.
+  rig.send(CommandType::TrackShiftStart, 0, 8);
+  rig.run(10, player);
+  CHECK(rig.status().tracks[0].trim_eighths == 8);
+  CHECK(exportLoop() == 6 * kBar);
+  CHECK(std::fabs(loop[0] - 1.0f) < 1e-6f);
+  CHECK(std::fabs(loop[eighth] - 0.5f) < 1e-6f);
+  CHECK(std::fabs(loop[3 * kBar] - 1.0f) < 1e-6f);
+  CHECK(std::fabs(loop[4 * kBar + 100] - 0.3f) < 1e-6f);  // the stray, now in bar 5
+  CHECK(std::fabs(loop[5 * kBar + 100]) < 1e-6f);         // bar 6: silence padding
+
+  // Remove the two extra bars at the end.
+  rig.send(CommandType::TrackTrimBars, 0, -1);
+  rig.send(CommandType::TrackTrimBars, 0, -1);
+  rig.run(10, player);
+  CHECK(rig.status().tracks[0].length == 4 * kBar);
+  CHECK(exportLoop() == 4 * kBar);
+  CHECK(std::fabs(loop[0] - 1.0f) < 1e-6f && std::fabs(loop[3 * kBar] - 1.0f) < 1e-6f);
+  // Nothing is lost: one bar can come back (it still holds the stray), not more.
+  CHECK(rig.status().tracks[0].trim_max_bars == 5);
+  rig.send(CommandType::TrackTrimBars, 0, 1);
+  rig.send(CommandType::TrackTrimBars, 0, 1);  // out of range: ignored
+  rig.run(10, player);
+  CHECK(rig.status().tracks[0].length == 5 * kBar);
+  rig.send(CommandType::TrackTrimBars, 0, -1);
+  rig.run(10, player);
+
+  // Fine shift: start an eighth earlier, so the downbeat hit plays an eighth late.
+  rig.send(CommandType::TrackShiftStart, 0, -1);
+  rig.run(10, player);
+  CHECK(exportLoop() == 4 * kBar);
+  CHECK(std::fabs(loop[0]) < 1e-6f);
+  CHECK(std::fabs(loop[eighth] - 1.0f) < 1e-6f);
+  rig.send(CommandType::TrackShiftStart, 0, 1);
+  rig.send(CommandType::TrackShiftStart, 0, -1000);  // out of range: ignored
+  rig.run(10, player);
+  CHECK(rig.status().tracks[0].trim_eighths == 8);
+
+  // Playback follows the window: the hit sounds on every downbeat.
+  const int64_t t0 = (rig.position() / (4 * kBar) + 1) * 4 * kBar;  // next cycle start
+  rig.run(t0 + 4 * kBar - rig.position(), [](int64_t) { return 0.0f; });
+  const size_t base = rig.out.size() - static_cast<size_t>(rig.position());
+  CHECK(std::fabs(rig.out[base + static_cast<size_t>(t0)] - 1.0f) < 1e-3f);
+  CHECK(std::fabs(rig.out[base + static_cast<size_t>(t0 + 2 * kBar + eighth)] - 0.5f) < 1e-3f);
+
+  // Half-bar loops cannot change length.
+  Rig half;
+  half.send(CommandType::TrackLengthMode, 1, 1);
+  half.send(CommandType::TrackTap, 1);
+  half.run(kBar + kBar / 2 + 10, [](int64_t) { return 0.1f; });
+  CHECK(half.status().tracks[1].trim_max_bars == 0);
+
+  // The first layer locks the trim (and keeps the audio exactly as heard).
+  CHECK(exportLoop() == 4 * kBar);
+  std::vector<float> before(loop.begin(), loop.begin() + 4 * kBar);
+  rig.send(CommandType::TrackOverdub, 0);
+  rig.run(5, [](int64_t) { return 0.0f; });
+  rig.send(CommandType::TrackUndo, 0);
+  rig.run(5, [](int64_t) { return 0.0f; });
+  CHECK(rig.status().tracks[0].trim_locked == 1);
+  rig.send(CommandType::TrackShiftStart, 0, 1);
+  rig.send(CommandType::TrackTrimBars, 0, -1);
+  rig.run(10, [](int64_t) { return 0.0f; });
+  CHECK(rig.status().tracks[0].trim_eighths == 8 && rig.status().tracks[0].length == 4 * kBar);
+  rig.send(CommandType::Stop);
+  rig.run(kStopFrames, [](int64_t) { return 0.0f; });
+  CHECK(exportLoop() == 4 * kBar);
+  float worst = 0.0f;
+  for (int64_t i = 0; i < 4 * kBar; ++i) worst = std::max(worst, std::fabs(loop[i] - before[i]));
+  CHECK(worst < 1e-6f);
+  std::vector<float> rec(loop.size());
+  CHECK(rig.engine.exportRecording(0, rec.data(), static_cast<int64_t>(rec.size())) == -2);
+}
+
+void testTrimSeamAndLiveCrossfade() {
+  std::printf("trim keeps the seam continuous and crossfades when trimmed while playing\n");
+  Rig rig;
+  const double step = 2 * 3.14159265358979 * 7.3 / kRate;
+  auto sine = [&](int64_t d) { return static_cast<float>(std::sin(static_cast<double>(d) * step)); };
+  rig.send(CommandType::TrackLengthMode, 0, 4);  // two bars
+  rig.send(CommandType::TrackTap, 0);
+  rig.run(3 * kBar + 10, sine);
+  std::vector<float> loop(static_cast<size_t>(2 * kBar));
+  const float maxStep = static_cast<float>(step) * 1.05f;
+
+  for (int shift : {3, -2, 5}) {  // trims while playing
+    rig.send(CommandType::TrackShiftStart, 0, shift);
+    const size_t mark = rig.out.size();
+    rig.run(200, sine);
+    float worst = 0.0f;
+    for (size_t i = mark; i < mark + 200; ++i) worst = std::max(worst, std::fabs(rig.out[i] - rig.out[i - 1]));
+    CHECK(worst < 0.5f);  // a 5 ms crossfade, not a jump to another part of the wave
+    CHECK(rig.engine.exportLoop(0, loop.data(), 2 * kBar) == 2 * kBar);
+    CHECK(std::fabs(loop[2 * kBar - 1] - loop[0]) < maxStep);  // the seam stays smooth
+  }
+}
+
+void testRecordingRoundTrip() {
+  std::printf("a trimmed recording survives export + import with its window\n");
+  Rig rig;
+  auto content = [](int64_t d) { return static_cast<float>((d * 7919) % 1000) / 1000.0f - 0.5f; };
+  rig.send(CommandType::TrackLengthMode, 0, 6);  // three bars
+  rig.send(CommandType::TrackTap, 0);
+  rig.run(4 * kBar + 10, content);
+  rig.send(CommandType::TrackShiftStart, 0, 3);
+  rig.send(CommandType::TrackTrimBars, 0, -1);
+  rig.run(10, content);
+  const LooperTrackStatus ts = rig.status().tracks[0];
+  std::vector<float> rec(rig.engine.capacity());
+  const int64_t frames = rig.engine.exportRecording(0, rec.data(), static_cast<int64_t>(rec.size()));
+  CHECK(frames == ts.audio_end);
+  std::vector<float> a(static_cast<size_t>(ts.length)), b(static_cast<size_t>(ts.length));
+  CHECK(rig.engine.exportLoop(0, a.data(), ts.length) == ts.length);
+
+  CHECK(rig.engine.importLoop(5, rec.data(), frames, frames, false, ts.origin, ts.trim_eighths,
+                              ts.length) == 0);
+  rig.run(1, content);
+  const LooperTrackStatus& loaded = rig.status().tracks[5];
+  CHECK(loaded.state == LOOPER_TRACK_PLAYING && loaded.trim_locked == 0);
+  CHECK(loaded.trim_eighths == 3 && loaded.length == 2 * kBar);
+  CHECK(rig.engine.exportLoop(5, b.data(), ts.length) == ts.length);
+  float worst = 0.0f;
+  for (size_t i = 0; i < a.size(); ++i) worst = std::max(worst, std::fabs(a[i] - b[i]));
+  CHECK(worst < 1e-6f);
+  // ...and it can still be trimmed after loading.
+  rig.send(CommandType::TrackShiftStart, 5, -3);
+  rig.run(10, content);
+  CHECK(rig.status().tracks[5].trim_eighths == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -737,6 +900,9 @@ int main() {
   testPan();
   testOverdubFeedback();
   testLatencyCalibration();
+  testTrim();
+  testTrimSeamAndLiveCrossfade();
+  testRecordingRoundTrip();
   if (failures) {
     std::printf("%d check(s) failed\n", failures);
     return 1;

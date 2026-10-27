@@ -351,10 +351,10 @@ void looper_get_status(LooperStatus* out) {
   *out = s.engine->status();
 }
 
-int32_t looper_get_waveform(int32_t track, float* out, int32_t bins) {
+int32_t looper_get_waveform(int32_t track, int64_t from, int64_t to, float* out, int32_t bins) {
   auto& s = state();
   if (!s.engine || !out) return 0;
-  return s.engine->waveform(track, out, bins);
+  return s.engine->waveform(track, from, to, out, bins);
 }
 
 int32_t looper_commands_pending(void) {
@@ -372,10 +372,32 @@ int64_t looper_track_export(int32_t track, float* out, int64_t capacity) {
   return s.engine ? s.engine->exportLoop(track, out, capacity) : 0;
 }
 
-int32_t looper_track_import(int32_t track, const float* data, int64_t frames,
-                            int64_t target_frames) {
+int64_t looper_track_export_recording(int32_t track, float* out, int64_t capacity) {
   auto& s = state();
-  return s.engine ? s.engine->importLoop(track, data, frames, target_frames) : -1;
+  return s.engine ? s.engine->exportRecording(track, out, capacity) : 0;
+}
+
+int32_t looper_track_import(int32_t track, const float* data, int64_t frames,
+                            int64_t target_frames, int32_t locked, int64_t origin,
+                            int32_t trim_eighths, int64_t length) {
+  auto& s = state();
+  return s.engine ? s.engine->importLoop(track, data, frames, target_frames, locked != 0, origin,
+                                         trim_eighths, length)
+                  : -1;
+}
+
+void looper_track_shift_start(int32_t track, int32_t eighths) {
+  sendCommand(looper::CommandType::TrackShiftStart, [&](looper::Command& c) {
+    c.track = track;
+    c.i = eighths;
+  });
+}
+
+void looper_track_trim_bars(int32_t track, int32_t bars) {
+  sendCommand(looper::CommandType::TrackTrimBars, [&](looper::Command& c) {
+    c.track = track;
+    c.i = bars;
+  });
 }
 
 }  // extern "C"

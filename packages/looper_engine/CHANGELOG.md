@@ -1,3 +1,8 @@
+## 0.6.0
+
+* Trim: loops are windows over the recording (with up to a bar of pre-roll); shift the start by eighths, cut/extend whole bars, silence padding, live crossfade; locked by the first layer.
+* Seam crossfade at playback time while trimmable; recordings export/import with their window.
+
 ## 0.5.0
 
 * Quantized mute/unmute (beat or bar) with late-press tolerance and cancel.

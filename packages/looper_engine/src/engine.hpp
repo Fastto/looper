@@ -28,7 +28,9 @@ enum class CommandType : uint8_t {
   TrackVolume,
   TrackInput,
   TrackLengthMode,
-  TrackLoad,  // d = loop length; audio was written by importLoop()
+  TrackLoad,  // audio was written by importLoop(); d = length, a/b/c = origin/end/trim, i = locked
+  TrackShiftStart,
+  TrackTrimBars,
   TrackPan,
   SetMuteQuantize,
   SetFeedback,
@@ -40,6 +42,9 @@ struct Command {
   int32_t track = 0;
   int32_t i = 0;
   double d = 0.0;
+  int64_t a = 0;
+  int64_t b = 0;
+  int64_t c = 0;
 };
 
 struct EngineConfig {
@@ -73,8 +78,12 @@ class Engine {
   // UI thread: flattened copy of a loop. Returns frames, 0 if none, -1 if busy.
   int64_t exportLoop(int track, float* out, int64_t capacity);
 
+  // UI thread: the raw recording of an untrimmed-locked track. -2 if locked.
+  int64_t exportRecording(int track, float* out, int64_t capacity);
+
   // UI thread: loads audio into an empty track. 0 = ok, -1 busy, -2 bad length.
-  int importLoop(int track, const float* data, int64_t frames, int64_t targetFrames);
+  int importLoop(int track, const float* data, int64_t frames, int64_t targetFrames,
+                 bool locked = true, int64_t origin = 0, int trimEighths = 0, int64_t length = 0);
 
   // UI thread: result of the last calibration (see looper_calibrate_result).
   int calibrationResult(int32_t* frames);
@@ -85,8 +94,8 @@ class Engine {
   // UI thread: latest published status.
   const LooperStatus& status() { return status_.read(); }
 
-  // UI thread: loop peaks for display. Only meaningful for PLAYING tracks.
-  int waveform(int track, float* out, int bins);
+  // UI thread: peaks of recording frames [from, to) for display.
+  int waveform(int track, int64_t from, int64_t to, float* out, int bins);
 
   const EngineConfig& config() const { return config_; }
 
@@ -94,7 +103,7 @@ class Engine {
   // Overdub layers are merged into the base lazily, one chunk at a time,
   // the first time playback or recording touches a chunk (see commitChunk).
   static constexpr int kChunkShift = 8;
-  // Upper bound for the loop-seam crossfade (8 ms even at 192 kHz).
+  // Upper bound for the loop-seam crossfade length (8 ms even at 192 kHz).
   static constexpr int kMaxSeamFrames = 2048;
   static constexpr int kGenerationHistory = 256;
 
@@ -110,10 +119,21 @@ class Engine {
     bool writing = false;
     bool writeStarted = false;
     int64_t written = 0;
-    // The audio just before the downbeat, captured when recording starts and
-    // crossfaded into the end of the loop when it is complete (closeSeam).
-    std::array<float, kMaxSeamFrames> preroll{};
-    int prerollFrames = 0;
+    // The loop is a window over the recording in `buffer`: it starts at
+    // windowStart and lasts `length`. The recording keeps up to a bar of
+    // pre-roll before the original downbeat (`origin`); frames from audioEnd
+    // on are silence. Until the first layer the window can move (trim) and
+    // the seam is crossfaded at playback time; the first layer bakes the seam
+    // in and locks the trim (layers are recorded against the current cycle).
+    int64_t origin = 0;
+    int64_t audioEnd = 0;
+    int64_t windowStart = 0;
+    int trimEighths = 0;
+    bool trimLocked = false;
+    // Crossfade from the previous window after a trim while playing.
+    int64_t prevStart = 0;
+    int64_t prevLength = 0;
+    int windowFadeLeft = 0;
     // Short envelopes so a loop never starts or vanishes with a jump.
     int fadeInLeft = 0;     // frames left of the start fade-in
     int clearFadeLeft = 0;  // frames left before a requested clear happens
@@ -171,7 +191,14 @@ class Engine {
   void recomputeGrid();
   void processFrame(const float* in, float* out);
   void writeRecording(Track& t, int64_t musicalPos, float sample);
-  void closeSeam(Track& t);
+  int64_t eighthsToFrames(int eighths) const;
+  float baseAt(const Track& t, int64_t i) const;
+  float renderBase(const Track& t, int64_t start, int64_t length, int64_t pos) const;
+  void setWindow(Track& t, int64_t start, int64_t length);
+  void lockTrim(Track& t);
+  void trimLimits(const Track& t, int& minEighths, int& maxEighths, int& maxBars) const;
+  int64_t windowChunks(const Track& t) const;
+  int64_t headroom() const;
   float metronomeSample();
   void publishStatus();
 

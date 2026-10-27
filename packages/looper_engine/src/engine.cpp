@@ -41,9 +41,10 @@ Engine::Engine(const EngineConfig& config) : config_(config) {
     t.chunkGen.assign((capacity_ >> kChunkShift) + 1, 0);
   }
 
-  // Two seconds of input history: enough for the late-press tolerance plus
-  // the round-trip latency, which both reach back in time.
-  historySize_ = nextPowerOfTwo(static_cast<size_t>(sr * 2.0));
+  // Four seconds of input history: the late-press tolerance and the
+  // round-trip latency reach back in time, and every recording copies up to
+  // a bar of pre-roll from it (see headroom()).
+  historySize_ = nextPowerOfTwo(static_cast<size_t>(sr * 4.0));
   historyMask_ = static_cast<int64_t>(historySize_ - 1);
   const int usableInputs = std::min(config_.inputChannels, kMaxInputs);
   history_.assign(historySize_ * static_cast<size_t>(std::max(usableInputs, 1)), 0.0f);
@@ -133,17 +134,42 @@ void Engine::handle(const Command& cmd) {
       break;
     case CommandType::TrackLoad: {
       const auto length = static_cast<int64_t>(cmd.d);
-      if (t && t->state == LOOPER_TRACK_EMPTY && length > 0 &&
-          length <= static_cast<int64_t>(capacity_)) {
+      if (t && t->state == LOOPER_TRACK_EMPTY && length > 0) {
         resetLayer(*t);
         t->writing = false;
         t->recStart = 0;  // every loop is anchored to bar 1
         t->recEnd = length;
         t->length = length;
+        t->origin = cmd.a;
+        t->audioEnd = cmd.b;
+        t->trimEighths = static_cast<int>(cmd.c);
+        t->windowStart = t->origin + eighthsToFrames(t->trimEighths);
+        t->trimLocked = cmd.i != 0;
+        t->windowFadeLeft = 0;
         beginPlaying(*t);
       }
       break;
     }
+    case CommandType::TrackShiftStart:
+      if (t && t->state == LOOPER_TRACK_PLAYING && !t->trimLocked && !t->overdubbing) {
+        int minE = 0, maxE = 0, maxBars = 0;
+        trimLimits(*t, minE, maxE, maxBars);
+        const int target = t->trimEighths + cmd.i;
+        if (cmd.i != 0 && target >= minE && target <= maxE) {
+          t->trimEighths = target;
+          setWindow(*t, t->origin + eighthsToFrames(target), t->length);
+        }
+      }
+      break;
+    case CommandType::TrackTrimBars:
+      if (t && t->state == LOOPER_TRACK_PLAYING && !t->trimLocked && !t->overdubbing &&
+          t->length >= bar_ && t->length % bar_ == 0) {
+        int minE = 0, maxE = 0, maxBars = 0;
+        trimLimits(*t, minE, maxE, maxBars);
+        const int64_t bars = t->length / bar_ + cmd.i;
+        if (cmd.i != 0 && bars >= 1 && bars <= maxBars) setWindow(*t, t->windowStart, bars * bar_);
+      }
+      break;
     case CommandType::TrackUndo:
       if (t) undo(*t);
       break;
@@ -186,7 +212,8 @@ void Engine::handle(const Command& cmd) {
 }
 
 void Engine::tap(Track& t) {
-  const int64_t maxLen = std::max<int64_t>(static_cast<int64_t>(capacity_) / bar_ * bar_, bar_ / 2);
+  const int64_t maxLen = std::max<int64_t>(
+      (static_cast<int64_t>(capacity_) - headroom()) / bar_ * bar_, bar_ / 2);
   switch (t.state) {
     case LOOPER_TRACK_EMPTY: {
       if (!playing_) {
@@ -203,7 +230,12 @@ void Engine::tap(Track& t) {
       t.writing = true;
       t.writeStarted = false;
       t.written = 0;
-      t.prerollFrames = 0;
+      t.origin = headroom();
+      t.audioEnd = 0;
+      t.windowStart = t.origin;
+      t.trimEighths = 0;
+      t.trimLocked = false;
+      t.windowFadeLeft = 0;
       t.muted = false;
       t.state = position_ >= t.recStart ? LOOPER_TRACK_RECORDING : LOOPER_TRACK_ARMED;
       break;
@@ -274,7 +306,7 @@ void Engine::beginPlaying(Track& t) {
   t.state = LOOPER_TRACK_PLAYING;
   t.fadeInLeft = startFadeFrames_;
   t.gain = t.muted ? 0.0f : t.volume;  // no fade-in: keep the downbeat's attack
-  t.uncommitted = (t.length + (int64_t{1} << kChunkShift) - 1) >> kChunkShift;
+  t.uncommitted = windowChunks(t);
   t.layerVersion += 1;
 }
 
@@ -292,10 +324,11 @@ void Engine::resetLayer(Track& t) {
 
 void Engine::startOverdub(Track& t) {
   if (!playing_ || t.state != LOOPER_TRACK_PLAYING || t.length <= 0 || t.overdubbing) return;
+  lockTrim(t);
   // The previous layer is frozen into the base (if audible) as chunks are touched.
   t.supersededActive[t.generation % kGenerationHistory] = t.layerState == LOOPER_LAYER_ACTIVE;
   t.generation += 1;
-  t.uncommitted = (t.length + (int64_t{1} << kChunkShift) - 1) >> kChunkShift;
+  t.uncommitted = windowChunks(t);
   t.layerState = LOOPER_LAYER_RECORDING;
   t.layerGain = 1.0f;
   t.muted = false;
@@ -373,7 +406,8 @@ void Engine::writeOverdub(Track& t, int64_t musicalPos, float sample) {
   const float fadeFrames = kPunchFadeSeconds * static_cast<float>(config_.sampleRate);
   float fade = std::min(1.0f, static_cast<float>(musicalPos - t.odStart + 1) / fadeFrames);
   if (t.odEnd >= 0) fade = std::min(fade, static_cast<float>(t.odEnd - musicalPos) / fadeFrames);
-  const size_t idx = static_cast<size_t>(floorMod(musicalPos - t.recStart, t.length));
+  const auto idx =
+      static_cast<size_t>(t.windowStart + floorMod(musicalPos - t.recStart, t.length));
   commitChunk(t, idx);
   // Feedback: each pass scales what is already there. The decay lives in the
   // layer as a (negative) delta, so undo still brings back the original.
@@ -398,6 +432,12 @@ void Engine::clearTrack(Track& t) {
   t.clearFadeLeft = 0;
   t.fadeInLeft = 0;
   t.pendingMute = -1;
+  t.origin = 0;
+  t.audioEnd = 0;
+  t.windowStart = 0;
+  t.trimEighths = 0;
+  t.trimLocked = false;
+  t.windowFadeLeft = 0;
   resetLayer(t);
 }
 
@@ -459,14 +499,9 @@ void Engine::finishOnStop(Track& t) {
     t.length = len;
     beginPlaying(t);
   }
-  if (t.state == LOOPER_TRACK_PLAYING && t.writing) {
-    // The latency-delayed tail never arrived: silence it instead of
-    // replaying stale audio from a previous take.
-    const int64_t from = std::clamp<int64_t>(t.written, 0, t.length);
-    std::fill(t.buffer.begin() + from, t.buffer.begin() + t.length, 0.0f);
-    t.writing = false;
-    closeSeam(t);
-  }
+  // A latency-delayed tail that never arrived is simply silence: playback
+  // reads nothing past audioEnd.
+  if (t.state == LOOPER_TRACK_PLAYING) t.writing = false;
 }
 
 void Engine::process(const float* input, float* output, uint32_t frames) {
@@ -505,9 +540,6 @@ void Engine::processFrame(const float* in, float* out) {
   if (playing_) {
     const int64_t p = position_;
     const int64_t musical = p - latency_;
-    const int64_t maxLen =
-        std::max<int64_t>(static_cast<int64_t>(capacity_) / bar_ * bar_, bar_ / 2);
-
     const int64_t beat = floorDiv(p * beatsPerBar_, bar_);
     const bool newBeat = beat != lastBeat_;
     if (newBeat && muteQuantize_ != 0 &&
@@ -518,6 +550,8 @@ void Engine::processFrame(const float* in, float* out) {
     for (auto& t : tracks_) {
       if (t.state == LOOPER_TRACK_ARMED && p >= t.recStart) t.state = LOOPER_TRACK_RECORDING;
       if (t.state == LOOPER_TRACK_RECORDING) {
+        const int64_t maxLen = std::max<int64_t>(
+            (static_cast<int64_t>(capacity_) - t.origin) / bar_ * bar_, bar_ / 2);
         if (t.recEnd < 0 && p - t.recStart >= maxLen) t.recEnd = t.recStart + maxLen;
         if (t.recEnd >= 0 && p >= t.recEnd) {
           t.length = t.recEnd - t.recStart;
@@ -533,8 +567,19 @@ void Engine::processFrame(const float* in, float* out) {
         const bool layerOn =
             t.layerState == LOOPER_LAYER_ACTIVE || t.layerState == LOOPER_LAYER_RECORDING;
         t.layerGain += ((layerOn ? 1.0f : 0.0f) - t.layerGain) * gainSmoothing_;
-        const size_t idx = static_cast<size_t>(floorMod(p - t.recStart, t.length));
-        commitChunk(t, idx);
+        auto sampleAt = [&](int64_t start, int64_t length) {
+          const int64_t pos = floorMod(p - t.recStart, length);
+          const auto idx = static_cast<size_t>(start + pos);
+          commitChunk(t, idx);
+          return renderBase(t, start, length, pos) + t.layer[idx] * t.layerGain;
+        };
+        float loopSample = sampleAt(t.windowStart, t.length);
+        if (t.windowFadeLeft > 0) {
+          // Trimmed while playing: crossfade from where the old window was.
+          const float w = riseCurve(stopFadeFrames_ / 2 - t.windowFadeLeft + 1, stopFadeFrames_ / 2);
+          loopSample = sampleAt(t.prevStart, t.prevLength) * (1.0f - w) + loopSample * w;
+          --t.windowFadeLeft;
+        }
         float envelope = 1.0f;
         if (t.fadeInLeft > 0) {
           envelope = riseCurve(startFadeFrames_ - t.fadeInLeft + 1, startFadeFrames_);
@@ -545,7 +590,7 @@ void Engine::processFrame(const float* in, float* out) {
           envelope *= 1.0f - riseCurve(stopFadeFrames_ - t.clearFadeLeft + 1, stopFadeFrames_);
           clearNow = --t.clearFadeLeft == 0;
         }
-        const float s = (t.buffer[idx] + t.layer[idx] * t.layerGain) * t.gain * envelope;
+        const float s = loopSample * t.gain * envelope;
         // Balance-style pan law: unity at the centre, the far side fades out.
         const float targetL = t.pan <= 0.0f ? 1.0f : std::cos(t.pan * kHalfPi);
         const float targetR = t.pan >= 0.0f ? 1.0f : std::cos(-t.pan * kHalfPi);
@@ -621,18 +666,18 @@ void Engine::writeRecording(Track& t, int64_t musicalPos, float sample) {
   if (musicalPos < t.recStart) return;
   if (t.recEnd >= 0 && musicalPos >= t.recEnd) {
     t.writing = false;
-    closeSeam(t);
     return;
   }
-  const int64_t idx = musicalPos - t.recStart;
+  const int64_t idx = t.origin + (musicalPos - t.recStart);  // recording frame
   if (idx >= static_cast<int64_t>(capacity_)) {
     t.writing = false;
     return;
   }
   if (!t.writeStarted) {
     t.writeStarted = true;
-    // Retroactive start (late press): the first `idx` frames already went by.
-    // Pull them from the input history; the current frame is written below.
+    // Everything before the current frame comes from the input history: the
+    // pre-roll before the downbeat (for trimming earlier and for the seam)
+    // and, after a late press, the part of the take that already went by.
     const int64_t available = static_cast<int64_t>(historySize_) - 1;
     const int64_t missing = std::min(idx, available);
     std::fill(t.buffer.begin(), t.buffer.begin() + (idx - missing), 0.0f);
@@ -640,35 +685,100 @@ void Engine::writeRecording(Track& t, int64_t musicalPos, float sample) {
       t.buffer[static_cast<size_t>(idx - missing + k)] =
           historyAt(t.inputChannel, deviceFrame_ - missing + k);
     }
-    // Keep what was played just before the downbeat for the loop seam.
-    const int64_t downbeatDevice = deviceFrame_ - idx;
-    t.prerollFrames = seamFrames_;
-    for (int k = 0; k < seamFrames_; ++k) {
-      t.preroll[static_cast<size_t>(k)] =
-          historyAt(t.inputChannel, downbeatDevice - seamFrames_ + k);
-    }
   }
   t.buffer[static_cast<size_t>(idx)] = sample;
-  t.written = idx + 1;
+  t.written = idx + 1 - t.origin;
+  t.audioEnd = idx + 1;
 }
 
-// The loop's last sample is followed by its first one, but in the original
-// performance the first one was preceded by the pre-roll. Crossfading the end
-// of the loop into that pre-roll makes the wrap continuous (no click) while
-// leaving the downbeat itself untouched. Equal-power curves, because the two
-// signals are only loosely correlated.
-void Engine::closeSeam(Track& t) {
-  const int64_t len = t.recEnd - t.recStart;
-  if (len <= 0 || t.prerollFrames <= 0) return;
-  const int fade = static_cast<int>(std::min<int64_t>(t.prerollFrames, len / 4));
-  if (fade <= 0) return;
-  float* tail = t.buffer.data() + (len - fade);
-  const float* pre = t.preroll.data() + (t.prerollFrames - fade);
-  for (int k = 0; k < fade; ++k) {
-    const float x = (static_cast<float>(k) + 0.5f) / static_cast<float>(fade);
-    tail[k] = tail[k] * std::cos(x * kHalfPi) + pre[k] * std::sin(x * kHalfPi);
+// Headroom kept before the downbeat of every recording: up to a bar, limited
+// by the input history it is copied from.
+int64_t Engine::headroom() const {
+  return std::max<int64_t>(seamFrames_, std::min<int64_t>(bar_, static_cast<int64_t>(historySize_) / 2));
+}
+
+int64_t Engine::eighthsToFrames(int eighths) const {
+  return static_cast<int64_t>(
+      std::llround(static_cast<double>(eighths) * static_cast<double>(bar_) / (2.0 * beatsPerBar_)));
+}
+
+float Engine::baseAt(const Track& t, int64_t i) const {
+  return (i >= 0 && i < t.audioEnd) ? t.buffer[static_cast<size_t>(i)] : 0.0f;
+}
+
+// One sample of the loop's base at loop position `pos` of window
+// [start, start + length). While the trim can still change, the seam is
+// crossfaded here, at playback time, into whatever precedes the current start
+// in the recording (equal-power, last 8 ms): the wrap is continuous and the
+// downbeat untouched, wherever the window is.
+float Engine::renderBase(const Track& t, int64_t start, int64_t length, int64_t pos) const {
+  const float s = baseAt(t, start + pos);
+  if (t.trimLocked) return s;
+  const int64_t fade = std::min<int64_t>(seamFrames_, length / 4);
+  const int64_t k = pos - (length - fade);
+  if (fade <= 0 || k < 0) return s;
+  const float x = (static_cast<float>(k) + 0.5f) / static_cast<float>(fade);
+  return s * std::cos(x * kHalfPi) + baseAt(t, start - fade + k) * std::sin(x * kHalfPi);
+}
+
+void Engine::setWindow(Track& t, int64_t start, int64_t length) {
+  if (playing_ && t.state == LOOPER_TRACK_PLAYING) {
+    t.prevStart = t.windowStart;
+    t.prevLength = t.length;
+    t.windowFadeLeft = std::max(1, stopFadeFrames_ / 2);
   }
-  t.prerollFrames = 0;
+  t.windowStart = start;
+  t.length = length;
+  t.recEnd = t.recStart + length;
+  t.layerVersion += 1;
+}
+
+// Layers are recorded against the current cycle, so the first one fixes the
+// window: the seam is baked into the base and the trim is locked.
+void Engine::lockTrim(Track& t) {
+  if (t.trimLocked) return;
+  const int64_t end = t.windowStart + t.length;
+  if (t.audioEnd < end) {
+    std::fill(t.buffer.begin() + std::max<int64_t>(t.audioEnd, 0), t.buffer.begin() + end, 0.0f);
+  }
+  const int64_t fade = std::min<int64_t>(seamFrames_, t.length / 4);
+  for (int64_t k = 0; k < fade; ++k) {
+    const int64_t pos = t.length - fade + k;
+    t.buffer[static_cast<size_t>(t.windowStart + pos)] = renderBase(t, t.windowStart, t.length, pos);
+  }
+  t.audioEnd = std::max(t.audioEnd, end);
+  t.trimLocked = true;
+  t.windowFadeLeft = 0;
+}
+
+void Engine::trimLimits(const Track& t, int& minEighths, int& maxEighths, int& maxBars) const {
+  const int64_t bars = t.length / bar_;
+  if (t.trimLocked || t.state != LOOPER_TRACK_PLAYING) {
+    minEighths = maxEighths = t.trimEighths;
+    maxBars = 0;
+    return;
+  }
+  // Start: anywhere from the beginning of the pre-roll to the last recorded frame.
+  const double eighth = static_cast<double>(bar_) / (2.0 * beatsPerBar_);
+  minEighths = static_cast<int>(std::ceil(-static_cast<double>(t.origin) / eighth));
+  while (t.origin + eighthsToFrames(minEighths) < 0) ++minEighths;
+  maxEighths = static_cast<int>(std::floor(static_cast<double>(t.audioEnd - 1 - t.origin) / eighth));
+  while (maxEighths > minEighths && t.origin + eighthsToFrames(maxEighths) > t.audioEnd - 1) --maxEighths;
+  minEighths = std::min(minEighths, t.trimEighths);
+  maxEighths = std::max(maxEighths, t.trimEighths);
+  // Length: whole bars, up to what covers the recording (or the current length).
+  if (t.length < bar_ || t.length % bar_ != 0) {
+    maxBars = 0;
+    return;
+  }
+  const int64_t cover = (std::max<int64_t>(t.audioEnd - t.windowStart, 0) + bar_ - 1) / bar_;
+  const int64_t fits = (static_cast<int64_t>(capacity_) - t.windowStart) / bar_;
+  maxBars = static_cast<int>(std::min(std::max(bars, cover), std::max(bars, fits)));
+}
+
+int64_t Engine::windowChunks(const Track& t) const {
+  if (t.length <= 0) return 0;
+  return ((t.windowStart + t.length - 1) >> kChunkShift) - (t.windowStart >> kChunkShift) + 1;
 }
 
 float Engine::metronomeSample() {
@@ -721,6 +831,16 @@ void Engine::publishStatus() {
                   ? 1
                   : 0;
     ts.pending_mute = t.pendingMute;
+    ts.trim_locked = t.trimLocked ? 1 : 0;
+    ts.trim_eighths = t.trimEighths;
+    int minE = 0, maxE = 0, maxBars = 0;
+    trimLimits(t, minE, maxE, maxBars);
+    ts.trim_min_eighths = minE;
+    ts.trim_max_eighths = maxE;
+    ts.trim_max_bars = maxBars;
+    ts.origin = t.origin;
+    ts.window_start = t.windowStart;
+    ts.audio_end = t.audioEnd;
     ts.pan = t.pan;
     ts.volume = t.volume;
     ts.peak = t.peak;
@@ -728,23 +848,24 @@ void Engine::publishStatus() {
   status_.publish();
 }
 
-int Engine::waveform(int track, float* out, int bins) {
-  if (track < 0 || track >= kMaxTracks || bins <= 0) return 0;
+int Engine::waveform(int track, int64_t from, int64_t to, float* out, int bins) {
+  if (track < 0 || track >= kMaxTracks || bins <= 0 || to <= from) return 0;
   const LooperTrackStatus& ts = status_.read().tracks[track];
   if (ts.state != LOOPER_TRACK_PLAYING || ts.length <= 0) return 0;
   // Runs on the UI thread while audio may be writing: the result is only
   // used for drawing, so an occasional torn chunk is harmless.
   const Track& t = tracks_[track];
   const auto layerState = static_cast<LooperLayerState>(ts.layer_state);
-  const int64_t len = std::min<int64_t>(ts.length, static_cast<int64_t>(capacity_));
+  const int64_t span = to - from;
+  const auto cap = static_cast<int64_t>(capacity_);
   for (int b = 0; b < bins; ++b) {
-    const int64_t from = len * b / bins;
-    const int64_t to = std::max(len * (b + 1) / bins, from + 1);
+    const int64_t lo = from + span * b / bins;
+    const int64_t hi = std::max(from + span * (b + 1) / bins, lo + 1);
     float peak = 0.0f;
-    for (int64_t k = from; k < to && k < len; ++k) {
-      const size_t i = static_cast<size_t>(k);
-      const float layer = layerAudible(t, i, layerState) ? t.layer[i] : 0.0f;
-      peak = std::max(peak, std::fabs(t.buffer[i] + layer));
+    for (int64_t i = std::max<int64_t>(lo, 0); i < hi && i < cap; ++i) {
+      const auto u = static_cast<size_t>(i);
+      const float layer = layerAudible(t, u, layerState) ? t.layer[u] : 0.0f;
+      peak = std::max(peak, std::fabs(baseAt(t, i) + layer));
     }
     out[b] = std::min(peak, 1.0f);
   }
@@ -763,11 +884,26 @@ int64_t Engine::exportLoop(int track, float* out, int64_t capacity) {
   if (ts.state != LOOPER_TRACK_PLAYING || ts.length <= 0) return 0;
   const Track& t = tracks_[track];
   const auto layerState = static_cast<LooperLayerState>(ts.layer_state);
-  const int64_t len = std::min({ts.length, capacity, static_cast<int64_t>(capacity_)});
-  for (int64_t k = 0; k < len; ++k) {
-    const size_t i = static_cast<size_t>(k);
-    out[k] = t.buffer[i] + (layerAudible(t, i, layerState) ? t.layer[i] : 0.0f);
+  const int64_t len = std::min(ts.length, capacity);
+  for (int64_t pos = 0; pos < len; ++pos) {
+    const auto i = static_cast<size_t>(t.windowStart + pos);
+    out[pos] = renderBase(t, t.windowStart, ts.length, pos) +
+               (layerAudible(t, i, layerState) ? t.layer[i] : 0.0f);
   }
+  return len;
+}
+
+int64_t Engine::exportRecording(int track, float* out, int64_t capacity) {
+  if (track < 0 || track >= kMaxTracks || !out) return 0;
+  const LooperStatus& s = status_.read();
+  if (static_cast<int64_t>(sent_) != s.commands_handled) return -1;
+  const LooperTrackStatus& ts = s.tracks[track];
+  if (ts.state == LOOPER_TRACK_ARMED || ts.state == LOOPER_TRACK_RECORDING || ts.busy) return -1;
+  if (ts.state != LOOPER_TRACK_PLAYING || ts.length <= 0) return 0;
+  if (ts.trim_locked) return -2;
+  const Track& t = tracks_[track];
+  const int64_t len = std::min(ts.audio_end, capacity);
+  std::copy(t.buffer.begin(), t.buffer.begin() + len, out);
   return len;
 }
 
@@ -810,9 +946,20 @@ int Engine::calibrationResult(int32_t* frames) {
   return 1;
 }
 
-int Engine::importLoop(int track, const float* data, int64_t frames, int64_t targetFrames) {
+int Engine::importLoop(int track, const float* data, int64_t frames, int64_t targetFrames,
+                       bool locked, int64_t origin, int trimEighths, int64_t length) {
   if (track < 0 || track >= kMaxTracks || !data || frames <= 0) return -2;
   if (targetFrames <= 0 || targetFrames > static_cast<int64_t>(capacity_)) return -2;
+  if (locked) {
+    origin = 0;
+    trimEighths = 0;
+    length = targetFrames;
+  }
+  const int64_t start = origin + eighthsToFrames(trimEighths);
+  if (length <= 0 || origin < 0 || start < 0 || start >= targetFrames ||
+      start + length > static_cast<int64_t>(capacity_)) {
+    return -2;
+  }
   const LooperStatus& s = status_.read();
   if (static_cast<int64_t>(sent_) != s.commands_handled) return -1;
   if (s.tracks[track].state != LOOPER_TRACK_EMPTY) return -1;
@@ -837,7 +984,11 @@ int Engine::importLoop(int track, const float* data, int64_t frames, int64_t tar
   Command cmd;
   cmd.type = CommandType::TrackLoad;
   cmd.track = track;
-  cmd.d = static_cast<double>(targetFrames);
+  cmd.d = static_cast<double>(length);
+  cmd.i = locked ? 1 : 0;
+  cmd.a = origin;
+  cmd.b = targetFrames;
+  cmd.c = trimEighths;
   return send(cmd) ? 0 : -1;
 }
 

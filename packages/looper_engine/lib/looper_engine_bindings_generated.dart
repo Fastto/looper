@@ -365,6 +365,31 @@ class LooperEngineBindings {
   late final _looper_track_set_pan = _looper_track_set_panPtr
       .asFunction<void Function(int, double)>();
 
+  /// Moves the loop start by `eighths` eighth notes (negative = earlier), keeping
+  /// the length; ignored if out of range or the trim is locked.
+  void looper_track_shift_start(int track, int eighths) {
+    return _looper_track_shift_start(track, eighths);
+  }
+
+  late final _looper_track_shift_startPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int32, ffi.Int32)>>(
+        'looper_track_shift_start',
+      );
+  late final _looper_track_shift_start = _looper_track_shift_startPtr
+      .asFunction<void Function(int, int)>();
+
+  /// Adds (positive) or removes (negative) whole bars at the end of the loop.
+  void looper_track_trim_bars(int track, int bars) {
+    return _looper_track_trim_bars(track, bars);
+  }
+
+  late final _looper_track_trim_barsPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int32, ffi.Int32)>>(
+        'looper_track_trim_bars',
+      );
+  late final _looper_track_trim_bars = _looper_track_trim_barsPtr
+      .asFunction<void Function(int, int)>();
+
   /// --- read back -------------------------------------------------------------
   void looper_get_status(ffi.Pointer<LooperStatus> out) {
     return _looper_get_status(out);
@@ -379,18 +404,32 @@ class LooperEngineBindings {
 
   /// Fills `out` with `bins` peak values (0..1) of the track's loop.
   /// Returns the number of bins written (0 if the track is not playing).
-  int looper_get_waveform(int track, ffi.Pointer<ffi.Float> out, int bins) {
-    return _looper_get_waveform(track, out, bins);
+  /// Peaks (0..1) of the recording between frames [from, to), audible layer
+  /// included. Returns the number of bins written (0 if the track is not playing).
+  int looper_get_waveform(
+    int track,
+    int from,
+    int to,
+    ffi.Pointer<ffi.Float> out,
+    int bins,
+  ) {
+    return _looper_get_waveform(track, from, to, out, bins);
   }
 
   late final _looper_get_waveformPtr =
       _lookup<
         ffi.NativeFunction<
-          ffi.Int32 Function(ffi.Int32, ffi.Pointer<ffi.Float>, ffi.Int32)
+          ffi.Int32 Function(
+            ffi.Int32,
+            ffi.Int64,
+            ffi.Int64,
+            ffi.Pointer<ffi.Float>,
+            ffi.Int32,
+          )
         >
       >('looper_get_waveform');
   late final _looper_get_waveform = _looper_get_waveformPtr
-      .asFunction<int Function(int, ffi.Pointer<ffi.Float>, int)>();
+      .asFunction<int Function(int, int, int, ffi.Pointer<ffi.Float>, int)>();
 
   /// Commands sent but not yet applied by the audio thread.
   int looper_commands_pending() {
@@ -432,16 +471,52 @@ class LooperEngineBindings {
   late final _looper_track_export = _looper_track_exportPtr
       .asFunction<int Function(int, ffi.Pointer<ffi.Float>, int)>();
 
+  /// The whole recording behind an untrimmed-locked track (pre-roll included),
+  /// so a session can restore the trim later. Returns frames, 0 if none, -1 if
+  /// busy, -2 if the trim is locked (use looper_track_export instead).
+  int looper_track_export_recording(
+    int track,
+    ffi.Pointer<ffi.Float> out,
+    int capacity,
+  ) {
+    return _looper_track_export_recording(track, out, capacity);
+  }
+
+  late final _looper_track_export_recordingPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int64 Function(ffi.Int32, ffi.Pointer<ffi.Float>, ffi.Int64)
+        >
+      >('looper_track_export_recording');
+  late final _looper_track_export_recording = _looper_track_export_recordingPtr
+      .asFunction<int Function(int, ffi.Pointer<ffi.Float>, int)>();
+
   /// Loads audio into an EMPTY track, resampled to `target_frames`, and starts
-  /// it playing in time (anchored to bar 1). Returns 0 on success, -1 if busy
-  /// (track not empty or commands pending), -2 if the length is invalid.
+  /// it playing in time (anchored to bar 1). With `locked`, the audio is the
+  /// loop itself; otherwise it is a whole recording and `origin`,
+  /// `trim_eighths` and `length` (frames) restore its trim window.
+  /// Returns 0 on success, -1 if busy (track not empty or commands pending),
+  /// -2 if the lengths are invalid.
   int looper_track_import(
     int track,
     ffi.Pointer<ffi.Float> data,
     int frames,
     int target_frames,
+    int locked,
+    int origin,
+    int trim_eighths,
+    int length,
   ) {
-    return _looper_track_import(track, data, frames, target_frames);
+    return _looper_track_import(
+      track,
+      data,
+      frames,
+      target_frames,
+      locked,
+      origin,
+      trim_eighths,
+      length,
+    );
   }
 
   late final _looper_track_importPtr =
@@ -452,11 +527,17 @@ class LooperEngineBindings {
             ffi.Pointer<ffi.Float>,
             ffi.Int64,
             ffi.Int64,
+            ffi.Int32,
+            ffi.Int64,
+            ffi.Int32,
+            ffi.Int64,
           )
         >
       >('looper_track_import');
   late final _looper_track_import = _looper_track_importPtr
-      .asFunction<int Function(int, ffi.Pointer<ffi.Float>, int, int)>();
+      .asFunction<
+        int Function(int, ffi.Pointer<ffi.Float>, int, int, int, int, int, int)
+      >();
 }
 
 enum LooperTrackState {
@@ -546,6 +627,36 @@ final class LooperTrackStatus extends ffi.Struct {
   /// -1 none, 0/1 = unmute/mute waiting for the grid
   @ffi.Int32()
   external int pending_mute;
+
+  /// 1 once layered on (or loaded flattened): no trimming
+  @ffi.Int32()
+  external int trim_locked;
+
+  /// start shift in eighth notes from the original downbeat
+  @ffi.Int32()
+  external int trim_eighths;
+
+  @ffi.Int32()
+  external int trim_min_eighths;
+
+  @ffi.Int32()
+  external int trim_max_eighths;
+
+  /// longest allowed length in bars (0 = length can't change)
+  @ffi.Int32()
+  external int trim_max_bars;
+
+  /// recording frame of the original downbeat
+  @ffi.Int64()
+  external int origin;
+
+  /// recording frame where the loop starts
+  @ffi.Int64()
+  external int window_start;
+
+  /// recording frames that hold audio (silence beyond)
+  @ffi.Int64()
+  external int audio_end;
 
   /// -1 (left) .. 1 (right)
   @ffi.Float()

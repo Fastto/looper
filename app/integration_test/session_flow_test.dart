@@ -50,6 +50,11 @@ void main() {
       await pollUntil(() => c.status.tracks[0].state == TrackState.playing && !c.status.tracks[0].busy);
       final bar = c.status.barFrames;
       expect(c.status.tracks[0].length, bar);
+      // Trim: start a quarter note later (2 eighths). It must survive reopening.
+      c.trimStep = 2;
+      expect(c.canShiftStart(0, 1), isTrue);
+      c.shiftStart(0, 1);
+      await pollUntil(() => c.status.tracks[0].trimEighths == 2 && !c.status.tracks[0].busy);
       final original = c.engine.trackExport(0)!;
       expect(original.length, bar);
 
@@ -59,9 +64,11 @@ void main() {
           jsonDecode(await File('${root.path}/$id/session.json').readAsString()) as Map<String, dynamic>;
       final track = (manifest['tracks'] as List).first as Map<String, dynamic>;
       expect(track['halfBars'], 2);
+      expect((track['trim'] as Map)['eighths'], 2);
       expect(track['volume'], closeTo(0.7, 1e-9));
+      // The file holds the whole recording (pre-roll included), not just the loop.
       final wav = decodeWav(await File('${root.path}/$id/track-1.wav').readAsBytes());
-      expect(wav.samples, original);
+      expect(wav.samples.length, greaterThan(bar));
 
       await c.sessions.newSession();
       c.poll();
@@ -72,6 +79,8 @@ void main() {
       await pollUntil(() => c.status.tracks[0].state == TrackState.playing);
       expect(c.sessions.lastError, isNull);
       expect(c.status.tracks[0].length, bar);
+      expect(c.status.tracks[0].trimEighths, 2);
+      expect(c.status.tracks[0].trimLocked, isFalse);
       expect(c.tracks[0].volume, closeTo(0.7, 1e-9));
       expect(c.engine.trackExport(0), original);
       expect((await c.sessions.store.list()).length, 1); // the empty session was never written

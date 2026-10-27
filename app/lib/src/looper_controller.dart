@@ -71,7 +71,10 @@ class LooperController extends ChangeNotifier {
   double feedback = 1;
   final List<TrackSettings> tracks = List.generate(maxTracks, (_) => TrackSettings());
 
-  final Map<int, (int, List<double>)> _waveforms = {};
+  final Map<int, (int, WaveformView)> _waveforms = {};
+
+  /// Trim step for shifting a loop's start, in eighth notes; 0 = one bar.
+  int trimStep = 1;
   final List<DateTime> _taps = [];
   int _frame = 0;
 
@@ -111,18 +114,28 @@ class LooperController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Cached waveform of a playing loop: refetched when its audio changes,
-  /// and a few times per second while an overdub is being recorded.
-  List<double> waveform(int track) {
+  /// Cached waveform of a playing track: while the trim can change it shows
+  /// the whole recording with the loop window marked; once locked, the loop.
+  /// Refetched when the audio changes, and a few times per second while an
+  /// overdub is being recorded.
+  WaveformView waveform(int track) {
     final t = status.tracks[track];
-    if (t.state != TrackState.playing) return const [];
+    if (t.state != TrackState.playing) return WaveformView.empty;
     final live = t.overdubbing ? _frame ~/ 8 : 0;
-    final key = Object.hash(t.recStart, t.length, t.layerVersion, live);
+    final key = Object.hash(t.windowStart, t.length, t.audioEnd, t.trimLocked, t.layerVersion, live);
     final cached = _waveforms[track];
     if (cached != null && cached.$1 == key) return cached.$2;
-    final data = _engine.waveform(track, 240);
-    _waveforms[track] = (key, data);
-    return data;
+    final windowEnd = t.windowStart + t.length;
+    final from = t.trimLocked ? t.windowStart : math.min(0, t.windowStart);
+    final to = t.trimLocked ? windowEnd : math.max(t.audioEnd, windowEnd);
+    final span = math.max(1, to - from);
+    final view = WaveformView(
+      peaks: _engine.waveform(track, from, to, 240),
+      windowFrom: (t.windowStart - from) / span,
+      windowTo: (windowEnd - from) / span,
+    );
+    _waveforms[track] = (key, view);
+    return view;
   }
 
   // ---------------------------------------------------------------- device
@@ -388,6 +401,52 @@ class LooperController extends ChangeNotifier {
     setLatencyOffsetMs((ms - reportedMs).roundToDouble());
   }
 
+  // ---------------------------------------------------------------- trim
+
+  int get _stepEighths => trimStep == 0 ? 2 * status.beatsPerBar : trimStep;
+
+  /// Cycles the trim step: ⅛ → ¼ → bar.
+  void cycleTrimStep() {
+    trimStep = switch (trimStep) {
+      1 => 2,
+      2 => 0,
+      _ => 1,
+    };
+    _save();
+    notifyListeners();
+  }
+
+  String get trimStepLabel => switch (trimStep) {
+    1 => '⅛',
+    2 => '¼',
+    _ => 'bar',
+  };
+
+  bool _canTrim(TrackStatus t) => t.state == TrackState.playing && !t.trimLocked && !t.overdubbing;
+
+  /// Whether the start can move by one step in [direction] (-1 earlier, +1 later).
+  bool canShiftStart(int i, int direction) {
+    final t = status.tracks[i];
+    final target = t.trimEighths + direction * _stepEighths;
+    return _canTrim(t) && target >= t.trimMinEighths && target <= t.trimMaxEighths;
+  }
+
+  void shiftStart(int i, int direction) {
+    if (canShiftStart(i, direction)) _engine.trackShiftStart(i, direction * _stepEighths);
+  }
+
+  /// Whether a bar can be removed (-1) or added back (+1) at the end.
+  bool canTrimBars(int i, int delta) {
+    final t = status.tracks[i];
+    if (!_canTrim(t) || t.trimMaxBars == 0) return false;
+    final bars = t.length ~/ status.barFrames + delta;
+    return bars >= 1 && bars <= t.trimMaxBars;
+  }
+
+  void trimBars(int i, int delta) {
+    if (canTrimBars(i, delta)) _engine.trackTrimBars(i, delta);
+  }
+
   // ---------------------------------------------------------------- tracks
 
   void tapTrack(int i) => _engine.trackTap(i);
@@ -474,6 +533,7 @@ class LooperController extends ChangeNotifier {
     countInBars = p.getInt('countInBars') ?? countInBars;
     muteQuantize = p.getInt('muteQuantize') ?? muteQuantize;
     feedback = p.getDouble('feedback') ?? feedback;
+    trimStep = p.getInt('trimStep') ?? trimStep;
     for (var i = 0; i < maxTracks; i++) {
       tracks[i]
         ..pan = p.getDouble('track$i.pan') ?? 0
@@ -499,7 +559,8 @@ class LooperController extends ChangeNotifier {
       ..setBool('monitoring', monitoring)
       ..setInt('countInBars', countInBars)
       ..setInt('muteQuantize', muteQuantize)
-      ..setDouble('feedback', feedback);
+      ..setDouble('feedback', feedback)
+      ..setInt('trimStep', trimStep);
     for (var i = 0; i < maxTracks; i++) {
       p
         ..setDouble('track$i.pan', tracks[i].pan)
@@ -523,4 +584,16 @@ class BeatPosition {
 
   /// 0..1 progress through the current beat.
   final double beatPhase;
+}
+
+/// What the track waveform shows: peaks over a span of the recording and
+/// where the loop window sits in it (fractions 0..1).
+class WaveformView {
+  const WaveformView({required this.peaks, required this.windowFrom, required this.windowTo});
+
+  static const empty = WaveformView(peaks: [], windowFrom: 0, windowTo: 1);
+
+  final List<double> peaks;
+  final double windowFrom;
+  final double windowTo;
 }

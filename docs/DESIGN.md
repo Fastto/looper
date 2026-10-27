@@ -67,9 +67,10 @@ When a loop wraps, its last sample is followed by its first, and the two
 were never next to each other in the performance, so the wrap clicks. The
 fix used by hardware loopers: when recording starts, the engine keeps the
 few milliseconds played **just before** the downbeat (the pre-roll, taken
-from the input history, so it works for late presses too). When the take
-is complete, the last 8 ms of the loop are crossfaded (equal-power) into
-that pre-roll. The loop now ends exactly the way the performance led into
+from the input history, so it works for late presses too). The last 8 ms of the
+loop are crossfaded (equal-power) into that pre-roll — at playback time
+while the loop can still be trimmed (so the seam follows the trim), and
+baked into the audio when the trim locks (§3.5). The loop now ends exactly the way the performance led into
 the downbeat, so the wrap is continuous. The downbeat itself is never
 touched, so the attack of the first hit keeps its punch.
 
@@ -104,7 +105,34 @@ new features: nothing may switch audio on or off in a single sample.
 While a fade-out is running (Stop, clear), new commands wait in the queue
 for those few ms, so they act on the state that follows.
 
-### 3.5 Overdub and undo
+### 3.5 Trim
+
+Pressing record and then reaching for the instrument leaves a silent bar at
+the start; a stray sound after the last bar makes the loop a bar too long.
+Trim fixes both, on the waveform of each track:
+
+| Control | Effect |
+|---------|--------|
+| left `‹` / `›` | Start the loop one step earlier / later. The length stays; the loop's new start plays on the downbeat. Past the end of the recording it is padded with silence. |
+| step chip (`⅛` / `¼` / `bar`) | Step for the left pair (eighth note, quarter note, whole bar) |
+| right `‹` / `›` | Remove / add back a whole bar at the end (only for loops of 2+ bars) |
+
+Loop lengths stay whole bars, so trimmed loops never drift against the
+others (no polymeter). Nothing is destroyed: the loop is a **window over the
+recording** (`windowStart`, `length`), and the recording keeps up to a bar
+of **pre-roll** before the original downbeat, copied from the input history
+when recording starts — so `‹` can even recover a note played slightly
+early. Frames past the recorded audio read as silence. Trimming while
+playing crossfades from the old window over 5 ms.
+
+The first layer **locks the trim**: layers are recorded against the loop
+cycle as it is, so moving the window afterwards would split them at the
+seam. On locking, the seam crossfade is baked into the audio and the
+window is fixed. Sessions store the whole recording plus the window
+(`trim: {originBars, eighths}`), so an untouched loop can still be trimmed
+after reopening.
+
+### 3.6 Overdub and undo
 
 Overdub ("Layer") records on top of a playing loop. Unlike the first
 recording it is **not quantized**: it punches in and out the moment you
@@ -273,12 +301,14 @@ deletes and opens sessions.
 
 ```
 <Application Support>/Sessions/2026-10-27_15-04-12/
-  session.json      tempo, time signature, track settings, loop lengths
-  track-1.wav       mono 32-bit float, the loop with its audible layer mixed in
+  session.json      tempo, time signature, track settings, loop lengths, trim
+  track-1.wav       mono 32-bit float: the whole recording (pre-roll included)
+                    while the trim is open, else the loop with its layers mixed in
   track-3.wav
 ```
 
-`session.json` (`"format": "looper-session"`, `"version": 1`) stores each loop
+`session.json` (`"format": "looper-session"`, `"version": 2`; version 1 files
+load as locked loops) stores each loop
 length in **half-bars**, not frames, so a session recorded at 44.1 kHz loads
 exactly in time on a 48 kHz interface: the engine resamples each loop to
 `halfBars × bar / 2` frames. Undo history is not saved — layers are merged

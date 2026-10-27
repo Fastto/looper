@@ -49,6 +49,15 @@ typedef struct LooperTrackStatus {
   int64_t length;         // loop length in frames (PLAYING only)
   int32_t busy;           // audio is being written: export would be inconsistent
   int32_t pending_mute;   // -1 none, 0/1 = unmute/mute waiting for the grid
+  // Trim: the loop is a window over the recording (see docs/DESIGN.md §3.5).
+  int32_t trim_locked;    // 1 once layered on (or loaded flattened): no trimming
+  int32_t trim_eighths;   // start shift in eighth notes from the original downbeat
+  int32_t trim_min_eighths;
+  int32_t trim_max_eighths;
+  int32_t trim_max_bars;  // longest allowed length in bars (0 = length can't change)
+  int64_t origin;         // recording frame of the original downbeat
+  int64_t window_start;   // recording frame where the loop starts
+  int64_t audio_end;      // recording frames that hold audio (silence beyond)
   float pan;              // -1 (left) .. 1 (right)
   float volume;
   float peak;             // output peak meter, 0..1+, decays over time
@@ -140,13 +149,21 @@ LOOPER_EXPORT void looper_track_set_volume(int32_t track, float volume);
 LOOPER_EXPORT void looper_track_set_input(int32_t track, int32_t channel);
 LOOPER_EXPORT void looper_track_set_length_mode(int32_t track, int32_t half_bars);
 LOOPER_EXPORT void looper_track_set_pan(int32_t track, float pan);
+// Moves the loop start by `eighths` eighth notes (negative = earlier), keeping
+// the length; ignored if out of range or the trim is locked.
+LOOPER_EXPORT void looper_track_shift_start(int32_t track, int32_t eighths);
+// Adds (positive) or removes (negative) whole bars at the end of the loop.
+LOOPER_EXPORT void looper_track_trim_bars(int32_t track, int32_t bars);
 
 // --- read back -------------------------------------------------------------
 
 LOOPER_EXPORT void looper_get_status(LooperStatus* out);
 // Fills `out` with `bins` peak values (0..1) of the track's loop.
 // Returns the number of bins written (0 if the track is not playing).
-LOOPER_EXPORT int32_t looper_get_waveform(int32_t track, float* out, int32_t bins);
+// Peaks (0..1) of the recording between frames [from, to), audible layer
+// included. Returns the number of bins written (0 if the track is not playing).
+LOOPER_EXPORT int32_t looper_get_waveform(int32_t track, int64_t from, int64_t to, float* out,
+                                          int32_t bins);
 
 // --- sessions ----------------------------------------------------------------
 
@@ -158,11 +175,19 @@ LOOPER_EXPORT int64_t looper_max_loop_frames(void);
 // Returns the number of frames, 0 if the track holds no loop, or -1 if it is
 // busy (recording, layering, or commands pending): try again shortly.
 LOOPER_EXPORT int64_t looper_track_export(int32_t track, float* out, int64_t capacity);
+// The whole recording behind an untrimmed-locked track (pre-roll included),
+// so a session can restore the trim later. Returns frames, 0 if none, -1 if
+// busy, -2 if the trim is locked (use looper_track_export instead).
+LOOPER_EXPORT int64_t looper_track_export_recording(int32_t track, float* out, int64_t capacity);
 // Loads audio into an EMPTY track, resampled to `target_frames`, and starts
-// it playing in time (anchored to bar 1). Returns 0 on success, -1 if busy
-// (track not empty or commands pending), -2 if the length is invalid.
+// it playing in time (anchored to bar 1). With `locked`, the audio is the
+// loop itself; otherwise it is a whole recording and `origin`,
+// `trim_eighths` and `length` (frames) restore its trim window.
+// Returns 0 on success, -1 if busy (track not empty or commands pending),
+// -2 if the lengths are invalid.
 LOOPER_EXPORT int32_t looper_track_import(int32_t track, const float* data, int64_t frames,
-                                          int64_t target_frames);
+                                          int64_t target_frames, int32_t locked, int64_t origin,
+                                          int32_t trim_eighths, int64_t length);
 
 #ifdef __cplusplus
 }

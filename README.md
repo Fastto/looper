@@ -24,6 +24,8 @@ instrument, and layer loops that are always in time.
 | **Layer** button (or hold the big button) | Overdub on top of the loop; tap again to finish |
 | Undo / redo arrows | Remove / restore the last layer of that track |
 | L–R slider | Pan the track (double-click to centre) |
+| `‹ ›` left of the waveform | Trim: start the loop earlier / later by the step (`⅛`, `¼`, bar — click the chip) |
+| `‹ ›` right of the waveform | Remove / add back a bar at the end |
 | Bin icon | Clear the track |
 | Folder button (top bar) | Sessions: rename, new, duplicate, open, delete |
 | **Export audio…** (or `⌘E`) | Stems and a mix as WAV, aligned from bar 1, into a folder you choose |

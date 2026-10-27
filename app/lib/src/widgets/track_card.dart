@@ -42,8 +42,9 @@ class TrackCard extends StatelessWidget {
           ),
           SizedBox(
             height: 34,
-            child: _Waveform(
-              data: controller.waveform(index),
+            child: _TrimmableWaveform(
+              controller: controller,
+              index: index,
               playhead: view.loopPhase,
               color: t.overdubbing
                   ? LooperColors.overdub
@@ -371,26 +372,139 @@ class _Meter extends StatelessWidget {
   }
 }
 
-class _Waveform extends StatelessWidget {
-  const _Waveform({required this.data, required this.playhead, required this.color});
+/// The waveform with trim controls: the left pair moves the loop start by
+/// the trim step, the right pair removes or adds whole bars at the end.
+class _TrimmableWaveform extends StatelessWidget {
+  const _TrimmableWaveform({
+    required this.controller,
+    required this.index,
+    required this.playhead,
+    required this.color,
+  });
 
-  final List<double> data;
+  final LooperController controller;
+  final int index;
   final double? playhead;
   final Color color;
 
   @override
   Widget build(BuildContext context) {
-    return CustomPaint(
+    final c = controller;
+    final t = c.status.tracks[index];
+    final view = c.waveform(index);
+    final playing = t.state == TrackState.playing;
+    final showTrim = playing && !t.trimLocked;
+    final step = c.trimStepLabel;
+
+    Widget button(IconData icon, String tip, bool enabled, VoidCallback onPressed) => Tooltip(
+      message: tip,
+      child: SizedBox(
+        width: 22,
+        child: IconButton(
+          padding: EdgeInsets.zero,
+          iconSize: 18,
+          visualDensity: VisualDensity.compact,
+          onPressed: enabled ? onPressed : null,
+          icon: Icon(icon),
+        ),
+      ),
+    );
+
+    final wave = CustomPaint(
       size: Size.infinite,
-      painter: _WaveformPainter(data: data, playhead: playhead, color: color),
+      painter: _WaveformPainter(
+        data: view.peaks,
+        windowFrom: view.windowFrom,
+        windowTo: view.windowTo,
+        playhead: playhead,
+        color: color,
+      ),
+    );
+
+    if (!showTrim) {
+      return Stack(
+        children: [
+          Positioned.fill(child: wave),
+          if (playing && t.trimLocked)
+            const Positioned(
+              right: 4,
+              top: 2,
+              child: Tooltip(
+                message: 'Trim is fixed once you layer on a loop (layers follow the loop as recorded)',
+                child: Icon(Icons.lock_outline, size: 12, color: LooperColors.textSecondary),
+              ),
+            ),
+        ],
+      );
+    }
+    return Row(
+      children: [
+        button(
+          Icons.chevron_left,
+          'Start earlier by $step',
+          c.canShiftStart(index, -1),
+          () => c.shiftStart(index, -1),
+        ),
+        button(
+          Icons.chevron_right,
+          'Start later by $step (cut the beginning)',
+          c.canShiftStart(index, 1),
+          () => c.shiftStart(index, 1),
+        ),
+        Expanded(
+          child: Stack(
+            children: [
+              Positioned.fill(child: wave),
+              Positioned(
+                left: 2,
+                top: 1,
+                child: Tooltip(
+                  message: 'Trim step — click to change (⅛ / ¼ / bar)',
+                  child: InkWell(
+                    onTap: c.cycleTrimStep,
+                    borderRadius: BorderRadius.circular(4),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      decoration: BoxDecoration(
+                        color: LooperColors.surfaceHigh.withValues(alpha: 0.85),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(step, style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700)),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        button(
+          Icons.chevron_left,
+          'Remove the last bar',
+          c.canTrimBars(index, -1),
+          () => c.trimBars(index, -1),
+        ),
+        button(Icons.chevron_right, 'Add a bar back', c.canTrimBars(index, 1), () => c.trimBars(index, 1)),
+      ],
     );
   }
 }
 
 class _WaveformPainter extends CustomPainter {
-  _WaveformPainter({required this.data, required this.playhead, required this.color});
+  _WaveformPainter({
+    required this.data,
+    required this.windowFrom,
+    required this.windowTo,
+    required this.playhead,
+    required this.color,
+  });
 
   final List<double> data;
+
+  /// Where the loop sits in the shown span (0..1); outside is dimmed.
+  final double windowFrom;
+  final double windowTo;
+
+  /// 0..1 within the loop window.
   final double? playhead;
   final Color color;
 
@@ -400,17 +514,33 @@ class _WaveformPainter extends CustomPainter {
     final rrect = RRect.fromRectAndRadius(Offset.zero & size, const Radius.circular(6));
     canvas.drawRRect(rrect, Paint()..color = LooperColors.background);
     if (data.isEmpty) return;
-    final paint = Paint()
+    final inside = Paint()
       ..color = color.withValues(alpha: 0.75)
       ..strokeWidth = math.max(1, size.width / data.length * 0.7);
+    final outside = Paint()
+      ..color = LooperColors.muted.withValues(alpha: 0.5)
+      ..strokeWidth = inside.strokeWidth;
     for (var i = 0; i < data.length; i++) {
-      final x = (i + 0.5) / data.length * size.width;
+      final f = (i + 0.5) / data.length;
+      final x = f * size.width;
       final h = math.max(0.5, math.sqrt(data[i]) * mid * 0.95);
-      canvas.drawLine(Offset(x, mid - h), Offset(x, mid + h), paint);
+      final inWindow = f >= windowFrom && f <= windowTo;
+      canvas.drawLine(Offset(x, mid - h), Offset(x, mid + h), inWindow ? inside : outside);
+    }
+    // Brackets around the loop when the recording extends beyond it.
+    if (windowFrom > 0.001 || windowTo < 0.999) {
+      final bracket = Paint()
+        ..color = LooperColors.textPrimary.withValues(alpha: 0.8)
+        ..strokeWidth = 1.5
+        ..style = PaintingStyle.stroke;
+      for (final f in [windowFrom, windowTo]) {
+        final x = f * size.width;
+        canvas.drawLine(Offset(x, 2), Offset(x, size.height - 2), bracket);
+      }
     }
     final p = playhead;
     if (p != null) {
-      final x = p * size.width;
+      final x = (windowFrom + p * (windowTo - windowFrom)) * size.width;
       canvas.drawLine(
         Offset(x, 0),
         Offset(x, size.height),
@@ -423,7 +553,11 @@ class _WaveformPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_WaveformPainter old) =>
-      old.playhead != playhead || !identical(old.data, data) || old.color != color;
+      old.playhead != playhead ||
+      !identical(old.data, data) ||
+      old.color != color ||
+      old.windowFrom != windowFrom ||
+      old.windowTo != windowTo;
 }
 
 class _LengthSelector extends StatelessWidget {

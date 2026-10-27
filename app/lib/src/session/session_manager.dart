@@ -38,6 +38,9 @@ class SessionManager extends ChangeNotifier {
   // (null = no file) and the manifest without its timestamp.
   final List<Object?> _savedAudio = List.filled(maxTracks, null);
   final List<int> _savedLength = List.filled(maxTracks, 0);
+  // How each saved track was written: null = the loop itself (locked trim),
+  // otherwise the whole recording and its window.
+  final List<({double originBars, int eighths})?> _savedTrim = List.filled(maxTracks, null);
   String? _savedMeta;
   Timer? _debounce;
   bool _saving = false;
@@ -116,10 +119,27 @@ class SessionManager extends ChangeNotifier {
         if (!t.hasAudio) continue;
         try {
           final wav = await store.readTrack(sessionId, t.file!);
-          var result = _c.engine.trackImport(i, wav.samples, t.halfBars * halfBar);
+          int import() {
+            if (t.locked) return _c.engine.trackImport(i, wav.samples, t.halfBars * halfBar);
+            // A whole recording: scale it to the current bar length (sample
+            // rate may differ) and restore its window.
+            final bar = 2 * halfBar;
+            final savedBar = barFramesFor(wav.sampleRate, data.bpm, data.beatsPerBar);
+            return _c.engine.trackImport(
+              i,
+              wav.samples,
+              (wav.samples.length * bar / savedBar).round(),
+              locked: false,
+              origin: (t.originBars * bar).round(),
+              trimEighths: t.trimEighths,
+              length: t.halfBars * halfBar,
+            );
+          }
+
+          var result = import();
           if (result == -1) {
             await _c.waitIdle();
-            result = _c.engine.trackImport(i, wav.samples, t.halfBars * halfBar);
+            result = import();
           }
           if (result != 0) {
             failed.add(i + 1);
@@ -210,6 +230,9 @@ class SessionManager extends ChangeNotifier {
       final t = status.tracks[i];
       _savedAudio[i] = _audioSignature(t);
       _savedLength[i] = t.state == TrackState.playing ? t.length : 0;
+      _savedTrim[i] = t.state == TrackState.playing && !t.trimLocked
+          ? (originBars: t.origin / status.barFrames, eighths: t.trimEighths)
+          : null;
     }
     _existsOnDisk = onDisk;
     _savedMeta = _existsOnDisk ? _metaKey(_manifest(status)) : null;
@@ -256,17 +279,27 @@ class SessionManager extends ChangeNotifier {
           await store.deleteTrack(sessionId, i);
           _savedAudio[i] = null;
           _savedLength[i] = 0;
+          _savedTrim[i] = null;
           wrote = true;
           continue;
         }
-        final audio = t.state == TrackState.playing ? _c.engine.trackExport(i) : null;
+        if (t.state != TrackState.playing) {
+          complete = false;
+          continue;
+        }
+        // Untrimmed-locked loops keep the whole recording, so the trim can
+        // still be changed after reopening the session.
+        final audio = t.trimLocked ? _c.engine.trackExport(i) : _c.engine.trackExportRecording(i);
         if (audio == null || audio.isEmpty) {
           complete = false;
           continue;
         }
         await store.writeTrack(sessionId, i, audio, status.sampleRate);
         _savedAudio[i] = signature;
-        _savedLength[i] = audio.length;
+        _savedLength[i] = t.length;
+        _savedTrim[i] = t.trimLocked
+            ? null
+            : (originBars: t.origin / status.barFrames, eighths: t.trimEighths);
         wrote = true;
       }
 
@@ -308,6 +341,9 @@ class SessionManager extends ChangeNotifier {
           SessionTrack(
             file: _savedAudio[i] != null ? _store!.trackFileName(i) : null,
             halfBars: _savedAudio[i] != null && halfBar > 0 ? (_savedLength[i] / halfBar).round() : 0,
+            locked: _savedTrim[i] == null,
+            originBars: _savedTrim[i]?.originBars ?? 0,
+            trimEighths: _savedTrim[i]?.eighths ?? 0,
             volume: _c.tracks[i].volume,
             pan: _c.tracks[i].pan,
             muted: status.tracks[i].muted,
@@ -325,3 +361,7 @@ class SessionManager extends ChangeNotifier {
     return 'Session ${two(t.day)}.${two(t.month)} ${two(t.hour)}:${two(t.minute)}';
   }
 }
+
+/// Bar length in frames, rounded to even exactly as the engine does.
+int barFramesFor(int sampleRate, double bpm, int beatsPerBar) =>
+    (sampleRate * 60 / bpm * beatsPerBar / 2).round() * 2;

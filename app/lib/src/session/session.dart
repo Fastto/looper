@@ -9,6 +9,9 @@ class SessionTrack {
     this.muted = false,
     this.input = 0,
     this.lengthMode = 0,
+    this.locked = true,
+    this.originBars = 0,
+    this.trimEighths = 0,
   });
 
   factory SessionTrack.fromJson(Map<String, dynamic> json) => SessionTrack(
@@ -19,6 +22,10 @@ class SessionTrack {
     muted: json['muted'] as bool? ?? false,
     input: (json['input'] as num?)?.toInt() ?? 0,
     lengthMode: (json['lengthMode'] as num?)?.toInt() ?? 0,
+    // Version 1 files hold the finished loop only, i.e. a locked trim.
+    locked: json['trim'] == null,
+    originBars: ((json['trim'] as Map<String, dynamic>?)?['originBars'] as num?)?.toDouble() ?? 0,
+    trimEighths: ((json['trim'] as Map<String, dynamic>?)?['eighths'] as num?)?.toInt() ?? 0,
   );
 
   /// WAV file name inside the session folder; null for an empty track.
@@ -34,6 +41,14 @@ class SessionTrack {
   final int input;
   final int lengthMode;
 
+  /// True: the WAV is the loop itself. False: it is the whole recording
+  /// (with pre-roll), and the trim window is restored from [originBars]
+  /// (where the original downbeat sits, in bars from the file start) and
+  /// [trimEighths] (start shift in eighth notes).
+  final bool locked;
+  final double originBars;
+  final int trimEighths;
+
   bool get hasAudio => file != null && halfBars > 0;
 
   Map<String, dynamic> toJson() => {
@@ -44,6 +59,7 @@ class SessionTrack {
     'muted': muted,
     'input': input,
     'lengthMode': lengthMode,
+    if (!locked) 'trim': {'originBars': originBars, 'eighths': trimEighths},
   };
 }
 
@@ -81,7 +97,7 @@ class SessionData {
   }
 
   static const format = 'looper-session';
-  static const currentVersion = 1;
+  static const currentVersion = 2;
 
   final String name;
   final DateTime createdAt;
