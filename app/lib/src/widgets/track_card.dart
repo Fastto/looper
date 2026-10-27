@@ -32,7 +32,12 @@ class TrackCard extends StatelessWidget {
           _Header(controller: controller, index: index, status: s, track: t),
           Expanded(
             child: Center(
-              child: _TrackButton(view: view, onTap: () => controller.tapTrack(index), index: index),
+              child: _TrackButton(
+                view: view,
+                index: index,
+                onTap: () => controller.tapTrack(index),
+                onLongPress: () => controller.toggleOverdub(index),
+              ),
             ),
           ),
           SizedBox(
@@ -40,7 +45,9 @@ class TrackCard extends StatelessWidget {
             child: _Waveform(
               data: controller.waveform(index),
               playhead: view.loopPhase,
-              color: t.muted ? LooperColors.muted : LooperColors.play,
+              color: t.overdubbing
+                  ? LooperColors.overdub
+                  : (t.muted ? LooperColors.muted : LooperColors.play),
             ),
           ),
           const SizedBox(height: 6),
@@ -78,6 +85,7 @@ class TrackCard extends StatelessWidget {
               ),
             ],
           ),
+          _LayerControls(controller: controller, index: index, status: s, track: t),
         ],
       ),
     );
@@ -146,11 +154,23 @@ class _TrackView {
         );
       case TrackState.playing:
         final phase = t.length > 0 ? ((pos - t.recStart) % t.length) / t.length : 0.0;
+        if (t.overdubbing) {
+          return _TrackView(
+            color: LooperColors.overdub,
+            progress: phase,
+            label: 'Layer',
+            sublabel: 'tap to finish layer',
+            icon: Icons.layers,
+            active: true,
+            blink: false,
+            loopPhase: s.playing ? phase : null,
+          );
+        }
         return _TrackView(
           color: t.muted ? LooperColors.muted : LooperColors.play,
           progress: phase,
           label: bars(t.length),
-          sublabel: t.muted ? 'muted · tap to play' : 'tap to mute',
+          sublabel: t.muted ? 'muted · tap to play' : 'tap to mute · hold to layer',
           icon: t.muted ? Icons.volume_off : Icons.graphic_eq,
           active: !t.muted,
           blink: false,
@@ -170,10 +190,16 @@ class _TrackView {
 }
 
 class _TrackButton extends StatelessWidget {
-  const _TrackButton({required this.view, required this.onTap, required this.index});
+  const _TrackButton({
+    required this.view,
+    required this.onTap,
+    required this.onLongPress,
+    required this.index,
+  });
 
   final _TrackView view;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
   final int index;
 
   @override
@@ -192,6 +218,7 @@ class _TrackButton extends StatelessWidget {
             child: InkWell(
               customBorder: const CircleBorder(),
               onTap: onTap,
+              onLongPress: onLongPress,
               child: CustomPaint(
                 painter: _RingPainter(progress: view.progress, color: view.color, fill: fill),
                 child: SizedBox.square(
@@ -463,6 +490,65 @@ class _Chip extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Overdub toggle plus one level of undo/redo for the last layer.
+class _LayerControls extends StatelessWidget {
+  const _LayerControls({
+    required this.controller,
+    required this.index,
+    required this.status,
+    required this.track,
+  });
+
+  final LooperController controller;
+  final int index;
+  final EngineStatus status;
+  final TrackStatus track;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = track;
+    final canLayer = t.state == TrackState.playing && (status.playing || t.overdubbing);
+    return Row(
+      children: [
+        Expanded(
+          child: Tooltip(
+            message: t.overdubbing
+                ? 'Finish layer (⌥${index + 1})'
+                : 'Record a layer on top of this loop (⌥${index + 1}, or hold the big button)',
+            child: FilledButton.tonalIcon(
+              style: FilledButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                backgroundColor: t.overdubbing ? LooperColors.overdub : null,
+                foregroundColor: t.overdubbing ? Colors.black : null,
+              ),
+              onPressed: canLayer ? () => controller.toggleOverdub(index) : null,
+              icon: Icon(t.overdubbing ? Icons.check : Icons.layers, size: 18),
+              label: Text(t.overdubbing ? 'Finish layer' : 'Layer'),
+            ),
+          ),
+        ),
+        const SizedBox(width: 4),
+        Tooltip(
+          message: t.overdubbing ? 'Cancel this layer' : 'Undo last layer (⌘Z)',
+          child: IconButton(
+            visualDensity: VisualDensity.compact,
+            onPressed: t.canUndo ? () => controller.undoTrack(index) : null,
+            icon: const Icon(Icons.undo, size: 20),
+          ),
+        ),
+        Tooltip(
+          message: 'Redo layer (⇧⌘Z)',
+          child: IconButton(
+            visualDensity: VisualDensity.compact,
+            onPressed: t.canRedo ? () => controller.redoTrack(index) : null,
+            icon: const Icon(Icons.redo, size: 20),
+          ),
+        ),
+      ],
     );
   }
 }

@@ -21,10 +21,13 @@ instrument, and layer loops that are always in time.
 | Tap again | Closes the loop on the nearest sensible bar line, playback starts seamlessly |
 | Set the length first (½ … 8) | Recording stops by itself: one tap and play |
 | Tap a playing track | Mute / unmute (it keeps running in time) |
+| **Layer** button (or hold the big button) | Overdub on top of the loop; tap again to finish |
+| Undo / redo arrows | Remove / restore the last layer of that track |
 | Bin icon | Clear the track |
 
-Keyboard: `1`–`8` tap track · `Shift`+`1`–`8` clear · `Space` play/stop ·
-`M` click on/off · `T` tap tempo.
+Keyboard: `1`–`8` tap track · `⌥`+`1`–`8` layer (overdub) · `⌘Z` / `⇧⌘Z`
+undo / redo layer · `Shift`+`1`–`8` clear · `Space` play/stop · `M` click
+on/off · `T` tap tempo.
 
 Tempo and time signature are locked while any track holds audio.
 

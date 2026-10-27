@@ -29,11 +29,21 @@ typedef enum LooperTrackState {
   LOOPER_TRACK_PLAYING = 3,
 } LooperTrackState;
 
+// The most recent overdub layer of a track (one level of undo/redo).
+typedef enum LooperLayerState {
+  LOOPER_LAYER_NONE = 0,
+  LOOPER_LAYER_RECORDING = 1,  // overdub in progress
+  LOOPER_LAYER_ACTIVE = 2,     // audible; can be undone
+  LOOPER_LAYER_UNDONE = 3,     // silent; can be redone
+} LooperLayerState;
+
 typedef struct LooperTrackStatus {
   int32_t state;          // LooperTrackState
   int32_t muted;
   int32_t input_channel;
   int32_t length_mode;    // 0 = auto, otherwise fixed length in half-bars
+  int32_t layer_state;    // LooperLayerState
+  int32_t layer_version;  // changes whenever the loop's audio changes
   int64_t rec_start;      // transport frame where the loop starts (bar line)
   int64_t rec_end;        // transport frame where recording ends, -1 = open
   int64_t length;         // loop length in frames (PLAYING only)
@@ -97,8 +107,13 @@ LOOPER_EXPORT void looper_set_latency_frames(int32_t frames);
 
 // --- tracks ----------------------------------------------------------------
 
-// The one-button action: record / stop recording / toggle mute.
+// The one-button action: record / stop recording / stop overdub / toggle mute.
 LOOPER_EXPORT void looper_track_tap(int32_t track);
+// Starts or stops layering on top of a playing loop (immediate, not quantized).
+LOOPER_EXPORT void looper_track_overdub(int32_t track);
+// Silences / restores the last overdub layer. Undo during an overdub cancels it.
+LOOPER_EXPORT void looper_track_undo(int32_t track);
+LOOPER_EXPORT void looper_track_redo(int32_t track);
 LOOPER_EXPORT void looper_track_clear(int32_t track);
 LOOPER_EXPORT void looper_track_set_muted(int32_t track, int32_t muted);
 LOOPER_EXPORT void looper_track_set_volume(int32_t track, float volume);

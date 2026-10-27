@@ -211,6 +211,98 @@ void testStopKeepsWholeBars() {
   CHECK(rig.status().tracks[3].state == LOOPER_TRACK_EMPTY);
 }
 
+
+void testOverdubUndoRedo() {
+  std::printf("overdub layers, undo/redo, lazy merge of older layers\n");
+  const int64_t latency = 20;
+  Rig rig(latency);
+  rig.send(CommandType::Play);
+  rig.run(1, [](int64_t) { return 0.0f; });
+  const int64_t d0 = rig.deviceFrame - 1;  // transport t <-> device d0 + t
+  std::vector<int64_t> hits;               // musical positions of impulses played
+  auto input = [&](int64_t d) {
+    for (int64_t m : hits) {
+      if (d == d0 + m + latency) return 1.0f;
+    }
+    return 0.0f;
+  };
+  auto runTo = [&](int64_t t) { rig.run(t - rig.position(), input); };
+  auto outAt = [&](int64_t t) {
+    return rig.out[rig.out.size() - static_cast<size_t>(rig.position()) + static_cast<size_t>(t)];
+  };
+  auto heard = [&](int64_t t) { return std::fabs(outAt(t) - 1.0f) < 1e-3f; };
+  auto silent = [&](int64_t t) { return std::fabs(outAt(t)) < 1e-3f; };
+
+  // Base loop: one bar with a hit on 1000.
+  rig.send(CommandType::TrackLengthMode, 0, 2);
+  rig.send(CommandType::TrackTap, 0);
+  hits.push_back(1000);
+  runTo(2 * kBar);
+  CHECK(rig.status().tracks[0].state == LOOPER_TRACK_PLAYING);
+
+  // Layer 1 adds a hit on 2000.
+  rig.send(CommandType::TrackOverdub, 0);
+  hits.push_back(2 * kBar + 2000);
+  runTo(2 * kBar + 10);
+  CHECK(rig.status().tracks[0].layer_state == LOOPER_LAYER_RECORDING);
+  runTo(3 * kBar);
+  rig.send(CommandType::TrackOverdub, 0);
+  runTo(4 * kBar);
+  CHECK(rig.status().tracks[0].layer_state == LOOPER_LAYER_ACTIVE);
+  CHECK(heard(3 * kBar + 1000) && heard(3 * kBar + 2000));
+
+  rig.send(CommandType::TrackUndo, 0);
+  runTo(5 * kBar);
+  CHECK(rig.status().tracks[0].layer_state == LOOPER_LAYER_UNDONE);
+  CHECK(heard(4 * kBar + 1000) && silent(4 * kBar + 2000));
+
+  rig.send(CommandType::TrackRedo, 0);
+  runTo(6 * kBar);
+  CHECK(heard(5 * kBar + 1000) && heard(5 * kBar + 2000));
+
+  // Layer 2 (hit on 3000) freezes layer 1 into the base.
+  rig.send(CommandType::TrackOverdub, 0);
+  hits.push_back(6 * kBar + 3000);
+  runTo(7 * kBar);
+  rig.send(CommandType::TrackOverdub, 0);
+  runTo(8 * kBar);
+  CHECK(heard(7 * kBar + 1000) && heard(7 * kBar + 2000) && heard(7 * kBar + 3000));
+  rig.send(CommandType::TrackUndo, 0);
+  runTo(9 * kBar);
+  CHECK(heard(8 * kBar + 1000) && heard(8 * kBar + 2000) && silent(8 * kBar + 3000));
+
+  // A new overdub discards the undone layer 2 for good.
+  rig.send(CommandType::TrackOverdub, 0);
+  hits.push_back(9 * kBar + 500);
+  runTo(10 * kBar);
+  rig.send(CommandType::TrackTap, 0);  // the big button also ends an overdub
+  runTo(11 * kBar);
+  CHECK(rig.status().tracks[0].muted == 0);
+  CHECK(heard(10 * kBar + 500) && heard(10 * kBar + 1000) && heard(10 * kBar + 2000) &&
+        silent(10 * kBar + 3000));
+  rig.send(CommandType::TrackUndo, 0);
+  runTo(12 * kBar);
+  CHECK(silent(11 * kBar + 500) && heard(11 * kBar + 1000) && heard(11 * kBar + 2000) &&
+        silent(11 * kBar + 3000));
+
+  // Undo during an overdub cancels it.
+  rig.send(CommandType::TrackRedo, 0);
+  rig.send(CommandType::TrackOverdub, 0);
+  hits.push_back(12 * kBar + 1500);
+  runTo(12 * kBar + 3000);
+  rig.send(CommandType::TrackUndo, 0);
+  runTo(14 * kBar);
+  CHECK(rig.status().tracks[0].layer_state == LOOPER_LAYER_UNDONE);
+  CHECK(heard(13 * kBar + 500) && silent(13 * kBar + 1500));
+
+  // Re-recording the track starts clean.
+  rig.send(CommandType::TrackClear, 0);
+  rig.send(CommandType::TrackTap, 0);
+  runTo(16 * kBar);
+  CHECK(rig.status().tracks[0].layer_state == LOOPER_LAYER_NONE);
+  CHECK(silent(15 * kBar + 500) && silent(15 * kBar + 1000) && silent(15 * kBar + 2000));
+}
+
 }  // namespace
 
 int main() {
@@ -220,6 +312,7 @@ int main() {
   testLatePressStartsRetroactively();
   testMuteAndClear();
   testStopKeepsWholeBars();
+  testOverdubUndoRedo();
   if (failures) {
     std::printf("%d check(s) failed\n", failures);
     return 1;

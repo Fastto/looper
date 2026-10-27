@@ -20,6 +20,9 @@ enum class CommandType : uint8_t {
   SetLatency,
   TrackTap,
   TrackClear,
+  TrackOverdub,
+  TrackUndo,
+  TrackRedo,
   TrackMute,
   TrackVolume,
   TrackInput,
@@ -37,7 +40,8 @@ struct EngineConfig {
   int sampleRate = 48000;
   int inputChannels = 2;
   int outputChannels = 2;
-  double maxLoopSeconds = 60.0;
+  // Each track holds two buffers (base + overdub layer) of this length.
+  double maxLoopSeconds = 48.0;
 };
 
 class Engine {
@@ -63,8 +67,14 @@ class Engine {
   const EngineConfig& config() const { return config_; }
 
  private:
+  // Overdub layers are merged into the base lazily, one chunk at a time,
+  // the first time playback or recording touches a chunk (see commitChunk).
+  static constexpr int kChunkShift = 8;
+  static constexpr int kGenerationHistory = 256;
+
   struct Track {
-    std::vector<float> buffer;
+    std::vector<float> buffer;  // base: the recording plus merged layers
+    std::vector<float> layer;   // the latest overdub, kept apart for undo
     LooperTrackState state = LOOPER_TRACK_EMPTY;
     int64_t recStart = 0;
     int64_t recEnd = -1;   // -1 while open-ended
@@ -80,10 +90,33 @@ class Engine {
     float volume = 1.0f;
     float gain = 0.0f;
     float peak = 0.0f;
+
+    // overdub
+    LooperLayerState layerState = LOOPER_LAYER_NONE;
+    float layerGain = 0.0f;
+    bool overdubbing = false;  // between the start and stop presses
+    bool odWriting = false;    // writes lag by the latency, like recording
+    int64_t odStart = 0;       // transport frames
+    int64_t odEnd = -1;
+    int32_t layerVersion = 0;
+    // Layer generations: chunkGen[c] is the generation whose audio chunk c
+    // of `layer` holds. A chunk from an older generation is merged into the
+    // base (if that layer was active when superseded) and zeroed on first use.
+    uint32_t generation = 0;
+    uint32_t floorGeneration = 0;  // older chunks hold stale audio
+    std::vector<uint32_t> chunkGen;
+    bool supersededActive[kGenerationHistory] = {};
   };
 
   void handle(const Command& cmd);
   void tap(Track& t);
+  void resetLayer(Track& t);
+  void startOverdub(Track& t);
+  void stopOverdub(Track& t);
+  void undo(Track& t);
+  void redo(Track& t);
+  void commitChunk(Track& t, size_t index);
+  void writeOverdub(Track& t, int64_t musicalPos, float sample);
   void startTransport(int64_t position);
   void stopTransport();
   void finishOnStop(Track& t);

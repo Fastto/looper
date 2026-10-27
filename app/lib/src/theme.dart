@@ -11,6 +11,7 @@ abstract final class LooperColors {
 
   static const record = Color(0xFFFF4D57);
   static const play = Color(0xFF3DDC97);
+  static const overdub = Color(0xFFFF9F43);
   static const muted = Color(0xFF5A6070);
   static const downbeat = Color(0xFFFFB020);
   static const beat = Color(0xFFE8EAEE);

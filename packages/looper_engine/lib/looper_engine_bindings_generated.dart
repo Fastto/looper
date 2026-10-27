@@ -202,7 +202,7 @@ class LooperEngineBindings {
   late final _looper_set_latency_frames = _looper_set_latency_framesPtr
       .asFunction<void Function(int)>();
 
-  /// The one-button action: record / stop recording / toggle mute.
+  /// The one-button action: record / stop recording / stop overdub / toggle mute.
   void looper_track_tap(int track) {
     return _looper_track_tap(track);
   }
@@ -212,6 +212,41 @@ class LooperEngineBindings {
         'looper_track_tap',
       );
   late final _looper_track_tap = _looper_track_tapPtr
+      .asFunction<void Function(int)>();
+
+  /// Starts or stops layering on top of a playing loop (immediate, not quantized).
+  void looper_track_overdub(int track) {
+    return _looper_track_overdub(track);
+  }
+
+  late final _looper_track_overdubPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int32)>>(
+        'looper_track_overdub',
+      );
+  late final _looper_track_overdub = _looper_track_overdubPtr
+      .asFunction<void Function(int)>();
+
+  /// Silences / restores the last overdub layer. Undo during an overdub cancels it.
+  void looper_track_undo(int track) {
+    return _looper_track_undo(track);
+  }
+
+  late final _looper_track_undoPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int32)>>(
+        'looper_track_undo',
+      );
+  late final _looper_track_undo = _looper_track_undoPtr
+      .asFunction<void Function(int)>();
+
+  void looper_track_redo(int track) {
+    return _looper_track_redo(track);
+  }
+
+  late final _looper_track_redoPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int32)>>(
+        'looper_track_redo',
+      );
+  late final _looper_track_redo = _looper_track_redoPtr
       .asFunction<void Function(int)>();
 
   void looper_track_clear(int track) {
@@ -317,6 +352,31 @@ enum LooperTrackState {
   };
 }
 
+/// The most recent overdub layer of a track (one level of undo/redo).
+enum LooperLayerState {
+  LOOPER_LAYER_NONE(0),
+
+  /// overdub in progress
+  LOOPER_LAYER_RECORDING(1),
+
+  /// audible; can be undone
+  LOOPER_LAYER_ACTIVE(2),
+
+  /// silent; can be redone
+  LOOPER_LAYER_UNDONE(3);
+
+  final int value;
+  const LooperLayerState(this.value);
+
+  static LooperLayerState fromValue(int value) => switch (value) {
+    0 => LOOPER_LAYER_NONE,
+    1 => LOOPER_LAYER_RECORDING,
+    2 => LOOPER_LAYER_ACTIVE,
+    3 => LOOPER_LAYER_UNDONE,
+    _ => throw ArgumentError("Unknown value for LooperLayerState: $value"),
+  };
+}
+
 final class LooperTrackStatus extends ffi.Struct {
   /// LooperTrackState
   @ffi.Int32()
@@ -331,6 +391,14 @@ final class LooperTrackStatus extends ffi.Struct {
   /// 0 = auto, otherwise fixed length in half-bars
   @ffi.Int32()
   external int length_mode;
+
+  /// LooperLayerState
+  @ffi.Int32()
+  external int layer_state;
+
+  /// changes whenever the loop's audio changes
+  @ffi.Int32()
+  external int layer_version;
 
   /// transport frame where the loop starts (bar line)
   @ffi.Int64()

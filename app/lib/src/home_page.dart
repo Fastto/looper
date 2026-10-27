@@ -52,9 +52,20 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
     final key = event.physicalKey;
+    final keyboard = HardwareKeyboard.instance;
     final track = _digitKeys.indexOf(key);
     if (track >= 0) {
-      HardwareKeyboard.instance.isShiftPressed ? _c.clearTrack(track) : _c.tapTrack(track);
+      if (keyboard.isShiftPressed) {
+        _c.clearTrack(track);
+      } else if (keyboard.isAltPressed) {
+        _c.toggleOverdub(track);
+      } else {
+        _c.tapTrack(track);
+      }
+      return KeyEventResult.handled;
+    }
+    if (key == PhysicalKeyboardKey.keyZ && (keyboard.isMetaPressed || keyboard.isControlPressed)) {
+      keyboard.isShiftPressed ? _c.redoLast() : _c.undoLast();
       return KeyEventResult.handled;
     }
     if (key == PhysicalKeyboardKey.space) {
@@ -120,8 +131,8 @@ class _TrackGrid extends StatelessWidget {
         final rows = (maxTracks / columns).ceil();
         const gap = 12.0;
         final cellHeight = (constraints.maxHeight - gap * (rows + 1)) / rows;
-        final scroll = cellHeight < 300;
-        final height = scroll ? 320.0 : cellHeight;
+        final scroll = cellHeight < 340;
+        final height = scroll ? 360.0 : cellHeight;
         final width = (constraints.maxWidth - gap * (columns + 1)) / columns;
         return SingleChildScrollView(
           physics: scroll ? null : const NeverScrollableScrollPhysics(),
@@ -169,7 +180,8 @@ class _HintBar extends StatelessWidget {
     return const Padding(
       padding: EdgeInsets.only(bottom: 6),
       child: Text(
-        '1–8 record / stop / mute   ·   Shift+1–8 clear   ·   Space play/stop   ·   M click   ·   T tap tempo',
+        '1–8 record / stop / mute   ·   ⌥1–8 layer   ·   ⌘Z / ⇧⌘Z undo / redo   ·   '
+        'Shift+1–8 clear   ·   Space play/stop   ·   M click   ·   T tap tempo',
         style: TextStyle(fontSize: 12, color: LooperColors.textSecondary),
       ),
     );

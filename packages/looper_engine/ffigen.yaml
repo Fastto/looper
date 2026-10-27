@@ -26,6 +26,7 @@ structs:
 enums:
   include:
     - 'LooperTrackState'
+    - 'LooperLayerState'
 macros:
   include:
     - 'LOOPER_MAX_.*'

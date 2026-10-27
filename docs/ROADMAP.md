@@ -8,7 +8,8 @@
 - [x] Keyboard shortcuts
 
 ## v0.2 — playing live
-- [ ] Overdub (record on top of a playing loop) with undo/redo
+- [x] Overdub (record on top of a playing loop) with one-level undo/redo per track
+- [ ] Overdub feedback (fade older layers as new ones go on)
 - [ ] Quantized mute/unmute (on next bar), optional
 - [ ] Tiny crossfade at the loop seam to remove clicks
 - [ ] Automatic latency calibration (loopback ping)

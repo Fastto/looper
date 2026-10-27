@@ -11,6 +11,7 @@ namespace looper {
 namespace {
 
 constexpr float kTwoPi = 6.28318530718f;
+constexpr float kPunchFadeSeconds = 0.004f;
 
 size_t nextPowerOfTwo(size_t v) {
   size_t p = 1;
@@ -24,7 +25,11 @@ Engine::Engine(const EngineConfig& config) : config_(config) {
   config_.inputChannels = std::clamp(config_.inputChannels, 0, kMaxInputs * 4);
   const double sr = config_.sampleRate;
   capacity_ = static_cast<size_t>(config_.maxLoopSeconds * sr);
-  for (auto& t : tracks_) t.buffer.assign(capacity_, 0.0f);
+  for (auto& t : tracks_) {
+    t.buffer.assign(capacity_, 0.0f);
+    t.layer.assign(capacity_, 0.0f);
+    t.chunkGen.assign((capacity_ >> kChunkShift) + 1, 0);
+  }
 
   // Two seconds of input history: enough for the late-press tolerance plus
   // the round-trip latency, which both reach back in time.
@@ -92,7 +97,17 @@ void Engine::handle(const Command& cmd) {
         t->writing = false;
         t->length = 0;
         t->muted = false;
+        resetLayer(*t);
       }
+      break;
+    case CommandType::TrackOverdub:
+      if (t) t->overdubbing ? stopOverdub(*t) : startOverdub(*t);
+      break;
+    case CommandType::TrackUndo:
+      if (t) undo(*t);
+      break;
+    case CommandType::TrackRedo:
+      if (t) redo(*t);
       break;
     case CommandType::TrackMute:
       if (t) t->muted = cmd.i != 0;
@@ -126,6 +141,7 @@ void Engine::tap(Track& t) {
                      ? t.recStart + std::min<int64_t>(t.lengthMode * (bar_ / 2), maxLen)
                      : -1;
       t.length = 0;
+      resetLayer(t);
       t.writing = true;
       t.writeStarted = false;
       t.written = 0;
@@ -149,9 +165,100 @@ void Engine::tap(Track& t) {
       break;
     }
     case LOOPER_TRACK_PLAYING:
-      t.muted = !t.muted;
+      if (t.overdubbing) {
+        stopOverdub(t);
+      } else {
+        t.muted = !t.muted;
+      }
       break;
   }
+}
+
+void Engine::resetLayer(Track& t) {
+  // Everything currently in `layer` becomes stale; no memset needed.
+  t.generation += 1;
+  t.floorGeneration = t.generation;
+  t.layerState = LOOPER_LAYER_NONE;
+  t.layerGain = 0.0f;
+  t.overdubbing = false;
+  t.odWriting = false;
+  t.layerVersion += 1;
+}
+
+void Engine::startOverdub(Track& t) {
+  if (!playing_ || t.state != LOOPER_TRACK_PLAYING || t.length <= 0 || t.overdubbing) return;
+  // The previous layer is frozen into the base (if audible) as chunks are touched.
+  t.supersededActive[t.generation % kGenerationHistory] = t.layerState == LOOPER_LAYER_ACTIVE;
+  t.generation += 1;
+  t.layerState = LOOPER_LAYER_RECORDING;
+  t.layerGain = 1.0f;
+  t.muted = false;
+  t.overdubbing = true;
+  t.odWriting = true;
+  t.odStart = position_;
+  t.odEnd = -1;
+  t.layerVersion += 1;
+}
+
+void Engine::stopOverdub(Track& t) {
+  if (!t.overdubbing) return;
+  t.overdubbing = false;
+  t.odEnd = position_;  // the latency-delayed tail keeps writing until then
+  if (!playing_) t.odWriting = false;
+  t.layerState = LOOPER_LAYER_ACTIVE;
+  t.layerVersion += 1;
+}
+
+void Engine::undo(Track& t) {
+  if (t.layerState == LOOPER_LAYER_RECORDING) {
+    // Cancel the overdub in progress.
+    t.overdubbing = false;
+    t.odWriting = false;
+    t.layerState = LOOPER_LAYER_UNDONE;
+    t.layerVersion += 1;
+  } else if (t.layerState == LOOPER_LAYER_ACTIVE) {
+    t.layerState = LOOPER_LAYER_UNDONE;
+    t.layerVersion += 1;
+  }
+}
+
+void Engine::redo(Track& t) {
+  if (t.layerState == LOOPER_LAYER_UNDONE) {
+    t.layerState = LOOPER_LAYER_ACTIVE;
+    t.layerVersion += 1;
+  }
+}
+
+void Engine::commitChunk(Track& t, size_t index) {
+  const size_t c = index >> kChunkShift;
+  const uint32_t g = t.chunkGen[c];
+  if (g == t.generation) return;
+  const bool merge = g >= t.floorGeneration && t.generation - g < kGenerationHistory &&
+                     t.supersededActive[g % kGenerationHistory];
+  const size_t from = c << kChunkShift;
+  const size_t to = std::min(from + (size_t{1} << kChunkShift), capacity_);
+  float* base = t.buffer.data();
+  float* layer = t.layer.data();
+  for (size_t i = from; i < to; ++i) {
+    if (merge) base[i] += layer[i];
+    layer[i] = 0.0f;
+  }
+  t.chunkGen[c] = t.generation;
+}
+
+void Engine::writeOverdub(Track& t, int64_t musicalPos, float sample) {
+  if (musicalPos < t.odStart) return;
+  if (t.odEnd >= 0 && musicalPos >= t.odEnd) {
+    t.odWriting = false;
+    return;
+  }
+  // Short fades at punch-in/out so the layer never starts with a click.
+  const float fadeFrames = kPunchFadeSeconds * static_cast<float>(config_.sampleRate);
+  float fade = std::min(1.0f, static_cast<float>(musicalPos - t.odStart + 1) / fadeFrames);
+  if (t.odEnd >= 0) fade = std::min(fade, static_cast<float>(t.odEnd - musicalPos) / fadeFrames);
+  const size_t idx = static_cast<size_t>(floorMod(musicalPos - t.recStart, t.length));
+  commitChunk(t, idx);
+  t.layer[idx] += sample * fade;
 }
 
 void Engine::startTransport(int64_t position) {
@@ -166,6 +273,8 @@ void Engine::stopTransport() {
 }
 
 void Engine::finishOnStop(Track& t) {
+  stopOverdub(t);
+  t.odWriting = false;
   if (t.state == LOOPER_TRACK_ARMED) {
     t.state = LOOPER_TRACK_EMPTY;
     t.writing = false;
@@ -236,21 +345,29 @@ void Engine::processFrame(const float* in, float* out) {
           t.state = LOOPER_TRACK_PLAYING;
           t.length = t.recEnd - t.recStart;
           t.gain = t.muted ? 0.0f : t.volume;  // no fade-in: keep the downbeat's attack
+          t.layerVersion += 1;
         }
       }
       if (t.writing) writeRecording(t, musical, inputSample(t.inputChannel));
+      if (t.odWriting) writeOverdub(t, musical, inputSample(t.inputChannel));
 
       if (t.state == LOOPER_TRACK_PLAYING && t.length > 0) {
         const float target = t.muted ? 0.0f : t.volume;
         t.gain += (target - t.gain) * gainSmoothing_;
-        const float s = t.buffer[static_cast<size_t>(floorMod(p - t.recStart, t.length))] * t.gain;
+        const bool layerOn =
+            t.layerState == LOOPER_LAYER_ACTIVE || t.layerState == LOOPER_LAYER_RECORDING;
+        t.layerGain += ((layerOn ? 1.0f : 0.0f) - t.layerGain) * gainSmoothing_;
+        const size_t idx = static_cast<size_t>(floorMod(p - t.recStart, t.length));
+        commitChunk(t, idx);
+        const float s = (t.buffer[idx] + t.layer[idx] * t.layerGain) * t.gain;
         mix += s;
         t.peak = std::max(std::fabs(s), t.peak * meterDecay_);
       } else {
         t.peak *= meterDecay_;
       }
 
-      const bool live = t.state == LOOPER_TRACK_ARMED || t.state == LOOPER_TRACK_RECORDING;
+      const bool live = t.state == LOOPER_TRACK_ARMED || t.state == LOOPER_TRACK_RECORDING ||
+                        t.overdubbing;
       if (monitoring_ && live && !(monitoredChannels & (1u << t.inputChannel))) {
         monitoredChannels |= 1u << t.inputChannel;
         monitor += inputSample(t.inputChannel);
@@ -338,6 +455,8 @@ void Engine::publishStatus() {
     ts.muted = t.muted ? 1 : 0;
     ts.input_channel = t.inputChannel;
     ts.length_mode = t.lengthMode;
+    ts.layer_state = t.layerState;
+    ts.layer_version = t.layerVersion;
     ts.rec_start = t.recStart;
     ts.rec_end = t.recEnd;
     ts.length = t.length;
@@ -351,13 +470,30 @@ int Engine::waveform(int track, float* out, int bins) {
   if (track < 0 || track >= kMaxTracks || bins <= 0) return 0;
   const LooperTrackStatus& ts = status_.read().tracks[track];
   if (ts.state != LOOPER_TRACK_PLAYING || ts.length <= 0) return 0;
-  const float* data = tracks_[track].buffer.data();
+  // Runs on the UI thread while audio may be writing: the result is only
+  // used for drawing, so an occasional torn chunk is harmless.
+  const Track& t = tracks_[track];
+  const float* base = t.buffer.data();
+  const float* layer = t.layer.data();
+  const bool layerOn = ts.layer_state == LOOPER_LAYER_ACTIVE ||
+                       ts.layer_state == LOOPER_LAYER_RECORDING;
   const int64_t len = std::min<int64_t>(ts.length, static_cast<int64_t>(capacity_));
   for (int b = 0; b < bins; ++b) {
     const int64_t from = len * b / bins;
     const int64_t to = std::max(len * (b + 1) / bins, from + 1);
     float peak = 0.0f;
-    for (int64_t k = from; k < to && k < len; ++k) peak = std::max(peak, std::fabs(data[k]));
+    for (int64_t k = from; k < to && k < len; ++k) {
+      const size_t i = static_cast<size_t>(k);
+      const uint32_t g = t.chunkGen[i >> kChunkShift];
+      bool withLayer;
+      if (g == t.generation) {
+        withLayer = layerOn;
+      } else {
+        withLayer = g >= t.floorGeneration && t.generation - g < kGenerationHistory &&
+                    t.supersededActive[g % kGenerationHistory];
+      }
+      peak = std::max(peak, std::fabs(base[i] + (withLayer ? layer[i] : 0.0f)));
+    }
     out[b] = std::min(peak, 1.0f);
   }
   return bins;

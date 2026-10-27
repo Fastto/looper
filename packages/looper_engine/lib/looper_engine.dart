@@ -17,6 +17,9 @@ const int maxInputs = LOOPER_MAX_INPUTS;
 
 enum TrackState { empty, armed, recording, playing }
 
+/// The last overdub layer of a track (one level of undo/redo).
+enum LayerState { none, recording, active, undone }
+
 class AudioDevice {
   const AudioDevice({required this.index, required this.name, required this.isDefault});
 
@@ -44,6 +47,8 @@ class TrackStatus {
     required this.muted,
     required this.inputChannel,
     required this.lengthMode,
+    required this.layerState,
+    required this.layerVersion,
     required this.recStart,
     required this.recEnd,
     required this.length,
@@ -56,6 +61,8 @@ class TrackStatus {
     muted: false,
     inputChannel: 0,
     lengthMode: 0,
+    layerState: LayerState.none,
+    layerVersion: 0,
     recStart: 0,
     recEnd: -1,
     length: 0,
@@ -69,6 +76,14 @@ class TrackStatus {
 
   /// 0 = auto, otherwise a fixed length in half-bars.
   final int lengthMode;
+  final LayerState layerState;
+
+  /// Changes whenever the loop's audio changes (new take, layer, undo/redo).
+  final int layerVersion;
+
+  bool get overdubbing => layerState == LayerState.recording;
+  bool get canUndo => layerState == LayerState.active || layerState == LayerState.recording;
+  bool get canRedo => layerState == LayerState.undone;
 
   /// Transport frame where the loop starts (always on a bar line).
   final int recStart;
@@ -197,6 +212,9 @@ class LooperEngine {
 
   void trackTap(int track) => _bindings.looper_track_tap(track);
   void trackClear(int track) => _bindings.looper_track_clear(track);
+  void trackOverdub(int track) => _bindings.looper_track_overdub(track);
+  void trackUndo(int track) => _bindings.looper_track_undo(track);
+  void trackRedo(int track) => _bindings.looper_track_redo(track);
   void trackSetMuted(int track, bool muted) => _bindings.looper_track_set_muted(track, muted ? 1 : 0);
   void trackSetVolume(int track, double volume) => _bindings.looper_track_set_volume(track, volume);
   void trackSetInput(int track, int channel) => _bindings.looper_track_set_input(track, channel);
@@ -228,6 +246,8 @@ class LooperEngine {
           muted: t.muted != 0,
           inputChannel: t.input_channel,
           lengthMode: t.length_mode,
+          layerState: LayerState.values[t.layer_state.clamp(0, LayerState.values.length - 1)],
+          layerVersion: t.layer_version,
           recStart: t.rec_start,
           recEnd: t.rec_end,
           length: t.length,

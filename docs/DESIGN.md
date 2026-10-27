@@ -48,6 +48,10 @@ Each track has one big button. Tapping it does the "next obvious thing":
                                                     │ automatically
     clear (any state)                               ▼
   ◀───────────────────────────────────────────── PLAYING ◀──tap──▶ MUTED
+                                                  │   ▲
+                                 Layer / hold /   │   │ tap / Layer
+                                 ⌥N               ▼   │
+                                                 OVERDUB
 ```
 
 * **EMPTY** — grey, shows "tap to record".
@@ -55,6 +59,32 @@ Each track has one big button. Tapping it does the "next obvious thing":
 * **RECORDING** — solid red; the ring fills once per bar, bar count shown.
 * **PLAYING** — green; the ring is the loop's playhead; waveform shown.
 * **MUTED** — dimmed; keeps playing silently so it re-enters in phase.
+* **OVERDUB** — orange; you are recording a layer on top of the loop.
+
+### 3.3 Overdub and undo
+
+Overdub ("Layer") records on top of a playing loop. Unlike the first
+recording it is **not quantized**: it punches in and out the moment you
+press, with 4 ms fades so there are no clicks, and it may run over the loop
+as many times as you like. Latency is compensated the same way as recording.
+
+Each track keeps its newest layer apart from the rest of the loop, which
+gives one level of **undo / redo** per track (like a loop-station pedal):
+
+* Undo silences the last layer (5 ms fade); redo brings it back.
+* Undo while overdubbing cancels the layer in progress.
+* Starting a new layer freezes the previous one into the loop (if it was
+  audible) and discards it if it was undone.
+* `⌘Z` / `⇧⌘Z` undo / redo the most recently layered track.
+
+How the engine does it without ever copying a whole loop on the audio thread:
+the track has a `base` and a `layer` buffer, and playback mixes
+`base + layer × layerGain`. Starting a new layer only bumps a *generation*
+number. The layer buffer is split into 256-frame chunks, each tagged with the
+generation it belongs to; the first time playback or recording touches a
+chunk from an older generation, that chunk is merged into `base` (if its
+layer was active) and zeroed. Playback visits every chunk once per loop
+cycle, so the cost is spread evenly over one cycle at O(1) per frame.
 
 Tapping a track while the transport is stopped starts the transport with a
 one-bar count-in and records from bar 1.
@@ -104,6 +134,7 @@ you fine-tune it.
 │ │ In1 Auto │ │ In2 2bar │ │ In1 Auto │ │ In1 Auto │                │
 │ │ vol ─●── │ │ vol ──●─ │ │          │ │          │                │
 │ │  M   ✕   │ │  M   ✕   │ │          │ │          │                │
+│ │[Layer]↶ ↷│ │[Layer]↶ ↷│ │          │ │          │                │
 │ └──────────┘ └──────────┘ └──────────┘ └──────────┘                │
 │                    … tracks 5–8 …                                  │
 └────────────────────────────────────────────────────────────────────┘
@@ -113,7 +144,9 @@ you fine-tune it.
 
 | Key | Action |
 |-----|--------|
-| `1`–`8` | Tap track (record / stop / mute toggle) |
+| `1`–`8` | Tap track (record / stop / stop layer / mute toggle) |
+| `⌥`+`1`–`8` | Start / finish a layer (overdub) |
+| `⌘Z` / `⇧⌘Z` | Undo / redo the last layer |
 | `Shift`+`1`–`8` | Clear track |
 | `Space` | Play / stop transport |
 | `M` | Metronome click on/off |

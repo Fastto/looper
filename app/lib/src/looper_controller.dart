@@ -50,6 +50,10 @@ class LooperController extends ChangeNotifier {
 
   final Map<int, (int, List<double>)> _waveforms = {};
   final List<DateTime> _taps = [];
+  int _frame = 0;
+
+  /// Tracks in the order they were overdubbed, for global undo/redo.
+  final List<int> _layerHistory = [];
 
   Future<void> start() async {
     _prefs = await SharedPreferences.getInstance();
@@ -74,17 +78,20 @@ class LooperController extends ChangeNotifier {
   // ---------------------------------------------------------------- polling
 
   void poll() {
+    _frame++;
     final next = _engine.status();
     // Without an open device the engine reports zeros; keep a sane grid.
     status = next.deviceRunning ? next : EngineStatus.idle;
     notifyListeners();
   }
 
-  /// Cached waveform of a playing loop (fetched once per recording).
+  /// Cached waveform of a playing loop: refetched when its audio changes,
+  /// and a few times per second while an overdub is being recorded.
   List<double> waveform(int track) {
     final t = status.tracks[track];
     if (t.state != TrackState.playing) return const [];
-    final key = t.recStart ^ (t.length << 20);
+    final live = t.overdubbing ? _frame ~/ 8 : 0;
+    final key = Object.hash(t.recStart, t.length, t.layerVersion, live);
     final cached = _waveforms[track];
     if (cached != null && cached.$1 == key) return cached.$2;
     final data = _engine.waveform(track, 240);
@@ -212,9 +219,40 @@ class LooperController extends ChangeNotifier {
 
   void tapTrack(int i) => _engine.trackTap(i);
 
+  /// Starts or stops layering on top of a playing loop.
+  void toggleOverdub(int i) {
+    final t = status.tracks[i];
+    if (t.state != TrackState.playing || (!status.playing && !t.overdubbing)) return;
+    if (!t.overdubbing) {
+      _layerHistory
+        ..remove(i)
+        ..add(i);
+    }
+    _engine.trackOverdub(i);
+  }
+
+  void undoTrack(int i) => _engine.trackUndo(i);
+
+  void redoTrack(int i) => _engine.trackRedo(i);
+
+  /// Undo the most recent layer that can be undone, on any track.
+  void undoLast() {
+    for (final i in _layerHistory.reversed) {
+      if (status.tracks[i].canUndo) return undoTrack(i);
+    }
+  }
+
+  /// Redo the most recently overdubbed track whose layer is undone.
+  void redoLast() {
+    for (final i in _layerHistory.reversed) {
+      if (status.tracks[i].canRedo) return redoTrack(i);
+    }
+  }
+
   void clearTrack(int i) {
     _engine.trackClear(i);
     _waveforms.remove(i);
+    _layerHistory.remove(i);
   }
 
   void toggleMute(int i) => _engine.trackSetMuted(i, !status.tracks[i].muted);
