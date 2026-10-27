@@ -36,9 +36,11 @@ Tempo and time signature are locked while any track holds audio.
 Requirements: Flutter 3.38+, Xcode, CocoaPods, CMake.
 
 ```sh
-cd app
-flutter run -d macos
+make up
 ```
+
+Other tasks: `make test` (engine tests + analysis), `make release` (build
+`Looper.app`), `make` to list everything.
 
 On first launch macOS asks for microphone access, which the app needs to
 read your audio interface. Open **Audio settings** (the sliders icon) to pick
