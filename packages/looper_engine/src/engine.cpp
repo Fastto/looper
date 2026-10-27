@@ -182,6 +182,9 @@ void Engine::handle(const Command& cmd) {
     case CommandType::TrackPan:
       if (t) t->pan = std::clamp(static_cast<float>(cmd.d), -1.0f, 1.0f);
       break;
+    case CommandType::TrackNormGain:
+      if (t) t->normGain = std::clamp(static_cast<float>(cmd.d), 0.0f, 16.0f);
+      break;
     case CommandType::SetMuteQuantize:
       muteQuantize_ = std::clamp(cmd.i, 0, 2);
       if (muteQuantize_ == 0) applyPendingMutes();
@@ -236,6 +239,7 @@ void Engine::tap(Track& t) {
       t.trimEighths = 0;
       t.trimLocked = false;
       t.windowFadeLeft = 0;
+      t.normGain = 1.0f;  // a new take starts un-normalized
       t.muted = false;
       t.state = position_ >= t.recStart ? LOOPER_TRACK_RECORDING : LOOPER_TRACK_ARMED;
       break;
@@ -305,7 +309,7 @@ void Engine::applyPendingMutes() {
 void Engine::beginPlaying(Track& t) {
   t.state = LOOPER_TRACK_PLAYING;
   t.fadeInLeft = startFadeFrames_;
-  t.gain = t.muted ? 0.0f : t.volume;  // no fade-in: keep the downbeat's attack
+  t.gain = t.muted ? 0.0f : t.volume * t.normGain;
   t.uncommitted = windowChunks(t);
   t.layerVersion += 1;
 }
@@ -438,6 +442,7 @@ void Engine::clearTrack(Track& t) {
   t.trimEighths = 0;
   t.trimLocked = false;
   t.windowFadeLeft = 0;
+  t.normGain = 1.0f;
   resetLayer(t);
 }
 
@@ -562,7 +567,7 @@ void Engine::processFrame(const float* in, float* out) {
       if (t.odWriting) writeOverdub(t, musical, inputSample(t.inputChannel));
 
       if (t.state == LOOPER_TRACK_PLAYING && t.length > 0) {
-        const float target = t.muted ? 0.0f : t.volume;
+        const float target = t.muted ? 0.0f : t.volume * t.normGain;
         t.gain += (target - t.gain) * gainSmoothing_;
         const bool layerOn =
             t.layerState == LOOPER_LAYER_ACTIVE || t.layerState == LOOPER_LAYER_RECORDING;
@@ -842,6 +847,7 @@ void Engine::publishStatus() {
     ts.window_start = t.windowStart;
     ts.audio_end = t.audioEnd;
     ts.pan = t.pan;
+    ts.norm_gain = t.normGain;
     ts.volume = t.volume;
     ts.peak = t.peak;
   }

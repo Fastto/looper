@@ -365,6 +365,18 @@ class LooperEngineBindings {
   late final _looper_track_set_pan = _looper_track_set_panPtr
       .asFunction<void Function(int, double)>();
 
+  /// Extra gain that normalizes a loop (1 = off). Reset by a new take or clear.
+  void looper_track_set_norm_gain(int track, double gain) {
+    return _looper_track_set_norm_gain(track, gain);
+  }
+
+  late final _looper_track_set_norm_gainPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int32, ffi.Float)>>(
+        'looper_track_set_norm_gain',
+      );
+  late final _looper_track_set_norm_gain = _looper_track_set_norm_gainPtr
+      .asFunction<void Function(int, double)>();
+
   /// Moves the loop start by `eighths` eighth notes (negative = earlier), keeping
   /// the length; ignored if out of range or the trim is locked.
   void looper_track_shift_start(int track, int eighths) {
@@ -661,6 +673,10 @@ final class LooperTrackStatus extends ffi.Struct {
   /// -1 (left) .. 1 (right)
   @ffi.Float()
   external double pan;
+
+  /// normalization gain on top of the volume (1 = off)
+  @ffi.Float()
+  external double norm_gain;
 
   @ffi.Float()
   external double volume;

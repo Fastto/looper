@@ -71,6 +71,7 @@ void main() {
           halfBars: 4,
           volume: 0.6,
           pan: -0.5,
+          normGain: 3.5,
           muted: true,
           input: 1,
         ),
@@ -96,6 +97,8 @@ void main() {
       expect(read.tracks[0].muted, isTrue);
       expect(read.tracks[0].pan, -0.5);
       expect(read.tracks[1].pan, 0);
+      expect(read.tracks[0].normGain, 3.5);
+      expect(read.tracks[1].normGain, 1);
       expect(read.tracks[0].input, 1);
       expect(read.tracks[1].lengthMode, 2);
       expect(read.tracks[1].hasAudio, isFalse);

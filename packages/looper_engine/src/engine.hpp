@@ -32,6 +32,7 @@ enum class CommandType : uint8_t {
   TrackShiftStart,
   TrackTrimBars,
   TrackPan,
+  TrackNormGain,
   SetMuteQuantize,
   SetFeedback,
   CalibrationStart,
@@ -143,6 +144,7 @@ class Engine {
     float volume = 1.0f;
     float gain = 0.0f;
     float pan = 0.0f;
+    float normGain = 1.0f;     // normalization (target; `gain` smooths to it)
     float panL = 1.0f;  // smoothed channel gains for `pan`
     float panR = 1.0f;
     int pendingMute = -1;  // quantized mute waiting for the next beat/bar

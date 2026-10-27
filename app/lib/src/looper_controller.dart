@@ -202,7 +202,9 @@ class LooperController extends ChangeNotifier {
         final audio = t.state == TrackState.playing ? _engine.trackExport(i) : null;
         if (audio != null) {
           if (audio.isNotEmpty) {
-            loops.add(ExportLoop(track: i, audio: audio, gain: tracks[i].volume, pan: tracks[i].pan));
+            loops.add(
+              ExportLoop(track: i, audio: audio, gain: tracks[i].volume * t.normGain, pan: tracks[i].pan),
+            );
           }
           break;
         }
@@ -399,6 +401,41 @@ class LooperController extends ChangeNotifier {
   void applyMeasuredLatency(double ms) {
     final reportedMs = reportedLatencyFrames / status.sampleRate * 1000;
     setLatencyOffsetMs((ms - reportedMs).roundToDouble());
+  }
+
+  // ---------------------------------------------------------------- normalize
+
+  /// Peak level a normalized loop is brought to: -1 dBFS.
+  static const normalizeTarget = 0.891;
+
+  /// Most a quiet loop is boosted: +24 dB (more would mostly raise noise).
+  static const maxNormGain = 15.85;
+
+  /// Normalizes a playing loop so its loudest peak hits -1 dBFS, or switches
+  /// normalization off if it is on. Returns the new gain in dB, or null if
+  /// the loop was silent or not ready.
+  Future<double?> toggleNormalize(int i) async {
+    final t = _engine.status().tracks[i];
+    if (t.state != TrackState.playing) return null;
+    if (t.normalized) {
+      _engine.trackSetNormGain(i, 1);
+      return 0;
+    }
+    final deadline = DateTime.now().add(const Duration(seconds: 3));
+    Float32List? audio;
+    while ((audio = _engine.trackExport(i)) == null && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    if (audio == null || audio.isEmpty) return null;
+    var peak = 0.0;
+    for (final x in audio) {
+      final a = x.abs();
+      if (a > peak) peak = a;
+    }
+    if (peak < 1e-4) return null;
+    final gain = (normalizeTarget / peak).clamp(0.0, maxNormGain).toDouble();
+    _engine.trackSetNormGain(i, gain);
+    return 20 * math.log(gain) / math.ln10;
   }
 
   // ---------------------------------------------------------------- trim

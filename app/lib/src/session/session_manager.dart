@@ -143,8 +143,9 @@ class SessionManager extends ChangeNotifier {
           }
           if (result != 0) {
             failed.add(i + 1);
-          } else if (t.muted) {
-            _c.engine.trackSetMuted(i, true);
+          } else {
+            if (t.muted) _c.engine.trackSetMuted(i, true);
+            if (t.normGain != 1) _c.engine.trackSetNormGain(i, t.normGain);
           }
         } on Object {
           failed.add(i + 1);
@@ -346,6 +347,7 @@ class SessionManager extends ChangeNotifier {
             trimEighths: _savedTrim[i]?.eighths ?? 0,
             volume: _c.tracks[i].volume,
             pan: _c.tracks[i].pan,
+            normGain: _savedAudio[i] != null ? status.tracks[i].normGain : 1,
             muted: status.tracks[i].muted,
             input: _c.tracks[i].input,
             lengthMode: _c.tracks[i].lengthMode,

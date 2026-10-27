@@ -386,6 +386,13 @@ int32_t looper_track_import(int32_t track, const float* data, int64_t frames,
                   : -1;
 }
 
+void looper_track_set_norm_gain(int32_t track, float gain) {
+  sendCommand(looper::CommandType::TrackNormGain, [&](looper::Command& c) {
+    c.track = track;
+    c.d = gain;
+  });
+}
+
 void looper_track_shift_start(int32_t track, int32_t eighths) {
   sendCommand(looper::CommandType::TrackShiftStart, [&](looper::Command& c) {
     c.track = track;

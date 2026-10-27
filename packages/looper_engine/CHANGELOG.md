@@ -2,6 +2,7 @@
 
 * Trim: loops are windows over the recording (with up to a bar of pre-roll); shift the start by eighths, cut/extend whole bars, silence padding, live crossfade; locked by the first layer.
 * Seam crossfade at playback time while trimmable; recordings export/import with their window.
+* Per-track normalization gain (smoothed; reset by a new take or clear).
 
 ## 0.5.0
 

@@ -23,6 +23,7 @@ instrument, and layer loops that are always in time.
 | Tap a playing track | Mute / unmute (it keeps running in time) |
 | **Layer** button (or hold the big button) | Overdub on top of the loop; tap again to finish |
 | Undo / redo arrows | Remove / restore the last layer of that track |
+| `N` next to the volume | Normalize the loop to −1 dBFS peak (non-destructive); click again to switch off |
 | L–R slider | Pan the track (double-click to centre) |
 | `‹ ›` left of the waveform | Trim: start the loop earlier / later by the step (`⅛`, `¼`, bar — click the chip) |
 | `‹ ›` right of the waveform | Remove / add back a bar at the end |

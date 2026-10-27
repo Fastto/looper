@@ -882,6 +882,28 @@ void testRecordingRoundTrip() {
   CHECK(rig.status().tracks[5].trim_eighths == 0);
 }
 
+
+void testNormGain() {
+  std::printf("normalization gain scales the loop smoothly; a new take or clear resets it\n");
+  Rig rig;
+  rig.send(CommandType::TrackLengthMode, 0, 2);
+  rig.send(CommandType::TrackVolume, 0, 0, 0.5);
+  rig.send(CommandType::TrackTap, 0);
+  rig.run(2 * kBar + 10, [](int64_t) { return 0.2f; });
+  CHECK(std::fabs(rig.out.back() - 0.1f) < 1e-6f);  // 0.2 x volume 0.5
+  rig.send(CommandType::TrackNormGain, 0, 0, 4.0);
+  const size_t mark = rig.out.size();
+  rig.run(100, [](int64_t) { return 0.0f; });
+  CHECK(std::fabs(rig.out.back() - 0.4f) < 1e-4f);  // x 4
+  float worst = 0.0f;
+  for (size_t i = mark; i < rig.out.size(); ++i) worst = std::max(worst, std::fabs(rig.out[i] - rig.out[i - 1]));
+  CHECK(worst < 0.1f);  // ramped, not stepped
+  CHECK(rig.status().tracks[0].norm_gain == 4.0f);
+  rig.send(CommandType::TrackClear, 0);
+  rig.run(50, [](int64_t) { return 0.0f; });
+  CHECK(rig.status().tracks[0].norm_gain == 1.0f);
+}
+
 }  // namespace
 
 int main() {
@@ -903,6 +925,7 @@ int main() {
   testTrim();
   testTrimSeamAndLiveCrossfade();
   testRecordingRoundTrip();
+  testNormGain();
   if (failures) {
     std::printf("%d check(s) failed\n", failures);
     return 1;

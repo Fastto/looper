@@ -59,6 +59,7 @@ typedef struct LooperTrackStatus {
   int64_t window_start;   // recording frame where the loop starts
   int64_t audio_end;      // recording frames that hold audio (silence beyond)
   float pan;              // -1 (left) .. 1 (right)
+  float norm_gain;        // normalization gain on top of the volume (1 = off)
   float volume;
   float peak;             // output peak meter, 0..1+, decays over time
 } LooperTrackStatus;
@@ -149,6 +150,8 @@ LOOPER_EXPORT void looper_track_set_volume(int32_t track, float volume);
 LOOPER_EXPORT void looper_track_set_input(int32_t track, int32_t channel);
 LOOPER_EXPORT void looper_track_set_length_mode(int32_t track, int32_t half_bars);
 LOOPER_EXPORT void looper_track_set_pan(int32_t track, float pan);
+// Extra gain that normalizes a loop (1 = off). Reset by a new take or clear.
+LOOPER_EXPORT void looper_track_set_norm_gain(int32_t track, float gain);
 // Moves the loop start by `eighths` eighth notes (negative = earlier), keeping
 // the length; ignored if out of range or the trim is locked.
 LOOPER_EXPORT void looper_track_shift_start(int32_t track, int32_t eighths);

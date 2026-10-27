@@ -6,6 +6,7 @@ class SessionTrack {
     this.halfBars = 0,
     this.volume = 0.8,
     this.pan = 0,
+    this.normGain = 1,
     this.muted = false,
     this.input = 0,
     this.lengthMode = 0,
@@ -19,6 +20,7 @@ class SessionTrack {
     halfBars: (json['halfBars'] as num?)?.toInt() ?? 0,
     volume: (json['volume'] as num?)?.toDouble() ?? 0.8,
     pan: (json['pan'] as num?)?.toDouble() ?? 0,
+    normGain: (json['normGain'] as num?)?.toDouble() ?? 1,
     muted: json['muted'] as bool? ?? false,
     input: (json['input'] as num?)?.toInt() ?? 0,
     lengthMode: (json['lengthMode'] as num?)?.toInt() ?? 0,
@@ -37,6 +39,9 @@ class SessionTrack {
 
   /// -1 (left) .. 1 (right).
   final double pan;
+
+  /// Normalization gain of the loop (1 = not normalized).
+  final double normGain;
   final bool muted;
   final int input;
   final int lengthMode;
@@ -56,6 +61,7 @@ class SessionTrack {
     'halfBars': halfBars,
     'volume': volume,
     'pan': pan,
+    'normGain': normGain,
     'muted': muted,
     'input': input,
     'lengthMode': lengthMode,

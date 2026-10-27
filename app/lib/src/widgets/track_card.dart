@@ -71,6 +71,7 @@ class TrackCard extends StatelessWidget {
                   onChanged: (v) => controller.setTrackVolume(index, v),
                 ),
               ),
+              _NormalizeButton(controller: controller, index: index),
               Expanded(
                 flex: 2,
                 child: _PanSlider(controller: controller, index: index),
@@ -723,6 +724,53 @@ class _PanSlider extends StatelessWidget {
             ),
             const Text('R', style: TextStyle(fontSize: 11, color: LooperColors.textSecondary)),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// One press brings the loop's peak to -1 dBFS (non-destructive gain on top
+/// of the volume); the button then shows the boost, and a second press
+/// switches it off.
+class _NormalizeButton extends StatelessWidget {
+  const _NormalizeButton({required this.controller, required this.index});
+
+  final LooperController controller;
+  final int index;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = controller.status.tracks[index];
+    final on = t.normalized;
+    final db = on ? 20 * math.log(t.normGain) / math.ln10 : 0.0;
+    final label = on ? '${db >= 0 ? '+' : ''}${db.toStringAsFixed(db.abs() < 10 ? 1 : 0)}' : 'N';
+    return Tooltip(
+      message: on
+          ? 'Normalized (${label}dB) — click to switch off'
+          : 'Normalize: bring the loudest peak to -1 dBFS',
+      child: SizedBox(
+        width: 42,
+        height: 26,
+        child: TextButton(
+          style: TextButton.styleFrom(
+            padding: EdgeInsets.zero,
+            backgroundColor: on ? LooperColors.play.withValues(alpha: 0.2) : null,
+            foregroundColor: on ? LooperColors.play : LooperColors.textSecondary,
+            textStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+          ),
+          onPressed: t.state == TrackState.playing
+              ? () async {
+                  final messenger = ScaffoldMessenger.of(context);
+                  final result = await controller.toggleNormalize(index);
+                  if (result == null) {
+                    messenger.showSnackBar(
+                      const SnackBar(content: Text('Nothing to normalize: the loop is silent.')),
+                    );
+                  }
+                }
+              : null,
+          child: Text(label),
         ),
       ),
     );

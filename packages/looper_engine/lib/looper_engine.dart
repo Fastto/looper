@@ -53,6 +53,7 @@ class TrackStatus {
     required this.busy,
     required this.pendingMute,
     required this.pan,
+    this.normGain = 1,
     required this.trimLocked,
     required this.trimEighths,
     required this.trimMinEighths,
@@ -112,6 +113,11 @@ class TrackStatus {
 
   /// -1 (left) .. 1 (right).
   final double pan;
+
+  /// Normalization gain on top of the volume; 1 = not normalized.
+  final double normGain;
+
+  bool get normalized => (normGain - 1).abs() > 1e-6;
 
   /// Trim: the loop is a window over the recording. Locked after layering.
   final bool trimLocked;
@@ -297,6 +303,7 @@ class LooperEngine {
   void trackSetVolume(int track, double volume) => _bindings.looper_track_set_volume(track, volume);
   void trackSetInput(int track, int channel) => _bindings.looper_track_set_input(track, channel);
   void trackSetPan(int track, double pan) => _bindings.looper_track_set_pan(track, pan);
+  void trackSetNormGain(int track, double gain) => _bindings.looper_track_set_norm_gain(track, gain);
   void trackShiftStart(int track, int eighths) => _bindings.looper_track_shift_start(track, eighths);
   void trackTrimBars(int track, int bars) => _bindings.looper_track_trim_bars(track, bars);
   void trackSetLengthMode(int track, int halfBars) => _bindings.looper_track_set_length_mode(track, halfBars);
@@ -335,6 +342,7 @@ class LooperEngine {
           busy: t.busy != 0,
           pendingMute: t.pending_mute < 0 ? null : t.pending_mute != 0,
           pan: t.pan,
+          normGain: t.norm_gain,
           trimLocked: t.trim_locked != 0,
           trimEighths: t.trim_eighths,
           trimMinEighths: t.trim_min_eighths,

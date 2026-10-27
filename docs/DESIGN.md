@@ -132,7 +132,18 @@ window is fixed. Sessions store the whole recording plus the window
 (`trim: {originBars, eighths}`), so an untouched loop can still be trimmed
 after reopening.
 
-### 3.6 Overdub and undo
+### 3.6 Normalize
+
+The `N` button next to a track's volume brings the loop's loudest peak to
+−1 dBFS. It is non-destructive: the engine applies a separate
+normalization gain on top of the volume fader (smoothed, so no click), the
+button shows the boost in dB, and pressing it again switches it off. The
+boost is capped at +24 dB so a near-silent loop doesn't become loud noise;
+a silent loop is left alone. Layers are included in the peak; after
+layering, press it twice to re-normalize. A new take or clearing the track
+resets it; sessions and exports keep it.
+
+### 3.7 Overdub and undo
 
 Overdub ("Layer") records on top of a playing loop. Unlike the first
 recording it is **not quantized**: it punches in and out the moment you
