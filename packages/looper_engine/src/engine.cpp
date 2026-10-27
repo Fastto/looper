@@ -14,6 +14,8 @@ constexpr float kTwoPi = 6.28318530718f;
 constexpr float kPunchFadeSeconds = 0.004f;
 constexpr float kSeamFadeSeconds = 0.008f;
 constexpr float kHalfPi = 1.57079632679f;
+constexpr float kPi = 3.14159265359f;
+constexpr float kStopFadeSeconds = 0.010f;
 
 size_t nextPowerOfTwo(size_t v) {
   size_t p = 1;
@@ -40,6 +42,7 @@ Engine::Engine(const EngineConfig& config) : config_(config) {
   const int usableInputs = std::min(config_.inputChannels, kMaxInputs);
   history_.assign(historySize_ * static_cast<size_t>(std::max(usableInputs, 1)), 0.0f);
 
+  stopFadeFrames_ = std::max(1, static_cast<int>(std::lround(kStopFadeSeconds * sr)));
   seamFrames_ = std::clamp(static_cast<int>(std::lround(kSeamFadeSeconds * sr)), 1, kMaxSeamFrames);
   gainSmoothing_ = 1.0f - std::exp(-1.0f / (0.005f * static_cast<float>(sr)));
   meterDecay_ = std::exp(-1.0f / (0.3f * static_cast<float>(sr)));
@@ -68,7 +71,7 @@ void Engine::handle(const Command& cmd) {
       if (!playing_) startTransport(0);
       break;
     case CommandType::Stop:
-      if (playing_) stopTransport();
+      if (playing_ && !stopping_) beginStop();
       break;
     case CommandType::SetTempo:
       if (!anyTrackHoldsAudio() && cmd.d >= 20.0 && cmd.d <= 300.0 && cmd.i >= 1 &&
@@ -302,6 +305,27 @@ void Engine::startTransport(int64_t position) {
   lastBeat_ = INT64_MIN;
 }
 
+// Cutting the output dead clicks, and cutting writes short would leave an
+// overdub without its punch-out fade. So Stop fades the output out, ends
+// layers right away (their latency-delayed tails still arrive), and only
+// then stops the transport, as of the moment Stop was pressed.
+void Engine::beginStop() {
+  stopping_ = true;
+  stopPressPosition_ = position_;
+  stopFrame_ = 0;
+  for (auto& t : tracks_) stopOverdub(t);
+  const auto punchFade =
+      static_cast<int64_t>(std::ceil(kPunchFadeSeconds * static_cast<float>(config_.sampleRate)));
+  stopFramesLeft_ = std::max<int64_t>(stopFadeFrames_, latency_ + punchFade + 1);
+}
+
+void Engine::finishStop() {
+  stopping_ = false;
+  position_ = stopPressPosition_;
+  clickEnv_ = 0.0f;
+  stopTransport();
+}
+
 void Engine::stopTransport() {
   playing_ = false;
   for (auto& t : tracks_) finishOnStop(t);
@@ -340,7 +364,8 @@ void Engine::finishOnStop(Track& t) {
 
 void Engine::process(const float* input, float* output, uint32_t frames) {
   Command cmd;
-  while (commands_.pop(cmd)) {
+  // While stopping, later commands (Play, a new recording...) wait their turn.
+  while (!stopping_ && commands_.pop(cmd)) {
     handle(cmd);
     ++handled_;
   }
@@ -423,11 +448,20 @@ void Engine::processFrame(const float* in, float* out) {
   }
 
   const float click = metronomeSample();
-  const float left = mix + monitor + click;
+  float master = 1.0f;
+  if (stopping_) {
+    master = stopFrame_ < stopFadeFrames_
+                 ? 0.5f * (1.0f + std::cos(kPi * static_cast<float>(stopFrame_ + 1) /
+                                           static_cast<float>(stopFadeFrames_)))
+                 : 0.0f;
+    ++stopFrame_;
+  }
+  const float left = (mix + monitor + click) * master;
   if (config_.outputChannels >= 1) out[0] = left;
   if (config_.outputChannels >= 2) out[1] = left;
   for (int ch = 2; ch < config_.outputChannels; ++ch) out[ch] = 0.0f;
   ++deviceFrame_;
+  if (stopping_ && --stopFramesLeft_ <= 0) finishStop();
 }
 
 void Engine::writeRecording(Track& t, int64_t musicalPos, float sample) {
@@ -496,7 +530,7 @@ float Engine::metronomeSample() {
 void Engine::publishStatus() {
   LooperStatus& s = status_.back();
   s.device_running = 1;
-  s.playing = playing_ ? 1 : 0;
+  s.playing = (playing_ && !stopping_) ? 1 : 0;
   s.sample_rate = config_.sampleRate;
   s.input_channels = std::min(config_.inputChannels, kMaxInputs);
   s.output_channels = config_.outputChannels;

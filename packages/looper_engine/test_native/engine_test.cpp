@@ -25,6 +25,8 @@ int failures = 0;
 // Tiny sample rate keeps the numbers readable: 60 BPM, 4/4 → bar = 4000.
 constexpr int kRate = 1000;
 constexpr int64_t kBar = 4000;
+// Stop fades out and waits for latency-delayed writes; this covers it.
+constexpr int64_t kStopFrames = 64;
 
 struct Rig {
   Engine engine;
@@ -198,7 +200,7 @@ void testStopKeepsWholeBars() {
   rig.run(kBar + 2 * kBar + 700, [](int64_t) { return 0.25f; });
   CHECK(rig.status().tracks[2].state == LOOPER_TRACK_RECORDING);
   rig.send(CommandType::Stop);
-  rig.run(1, [](int64_t) { return 0.0f; });
+  rig.run(kStopFrames, [](int64_t) { return 0.0f; });
   CHECK(rig.status().playing == 0);
   CHECK(rig.status().tracks[2].state == LOOPER_TRACK_PLAYING);
   CHECK(rig.status().tracks[2].length == 2 * kBar);
@@ -207,7 +209,7 @@ void testStopKeepsWholeBars() {
   rig.send(CommandType::TrackTap, 3);
   rig.run(kBar + 500, [](int64_t) { return 0.25f; });
   rig.send(CommandType::Stop);
-  rig.run(1, [](int64_t) { return 0.0f; });
+  rig.run(kStopFrames, [](int64_t) { return 0.0f; });
   CHECK(rig.status().tracks[3].state == LOOPER_TRACK_EMPTY);
 }
 
@@ -359,7 +361,7 @@ void testExportImport() {
   hits.push_back(4 * kBar + 500);
   runTo(4 * kBar + 800);
   rig.send(CommandType::Stop);
-  rig.run(1, input);
+  rig.run(kStopFrames, input);
   CHECK(rig.status().playing == 0);
   CHECK(exportTrack(0) == kBar);
   CHECK(std::fabs(buf[500] - 1.0f) < 1e-6f && std::fabs(buf[1000] - 1.0f) < 1e-6f &&
@@ -438,6 +440,60 @@ void testSeamCrossfade() {
   }
 }
 
+
+void testStopFadesOut() {
+  std::printf("stop fades the output out, lets layers punch out, then runs queued commands\n");
+  const int64_t latency = 20;
+  Rig rig(latency);
+  rig.send(CommandType::Play);
+  rig.run(1, [](int64_t) { return 0.0f; });
+  const int64_t d0 = rig.deviceFrame - 1;
+  // Base loop: one bar of a steady 0.5.
+  rig.send(CommandType::TrackLengthMode, 0, 2);
+  rig.send(CommandType::TrackTap, 0);
+  rig.run(2 * kBar - rig.position(), [](int64_t) { return 0.5f; });
+  CHECK(rig.status().tracks[0].state == LOOPER_TRACK_PLAYING);
+
+  // Layer a steady 0.25 from bar 3, then press Stop 2000 frames in.
+  rig.send(CommandType::TrackOverdub, 0);
+  auto layer = [&](int64_t d) { return d >= d0 + 2 * kBar + latency ? 0.25f : 0.0f; };
+  rig.run(2000, layer);
+  CHECK(std::fabs(rig.out.back() - 0.5f) < 1e-6f);  // the base plays; the layer is not heard yet
+  rig.send(CommandType::Stop);
+  rig.send(CommandType::TrackTap, 1);  // pressed right after Stop: must wait for it
+  rig.run(1, layer);
+  CHECK(rig.status().playing == 0);   // the UI sees "stopped" at once
+  const size_t fadeStart = rig.out.size() - 1;
+  rig.run(kStopFrames, layer);
+
+  // Output: a smooth fade over 10 ms (10 frames here), then silence.
+  float previous = 0.5f;
+  for (size_t i = fadeStart; i < fadeStart + 10; ++i) {
+    CHECK(rig.out[i] <= previous + 1e-6f);
+    CHECK(previous - rig.out[i] < 0.5f * 0.2f);
+    previous = rig.out[i];
+  }
+  CHECK(std::fabs(rig.out[fadeStart + 9]) < 1e-6f);
+  CHECK(std::fabs(rig.out[fadeStart + 20]) < 1e-6f);  // silent while the layer tail lands
+
+  // The tap queued during the fade ran afterwards: a fresh recording with a
+  // count-in, rather than one that the stop would have cancelled.
+  CHECK(rig.status().tracks[1].state == LOOPER_TRACK_ARMED);
+  CHECK(rig.status().playing == 1);
+  CHECK(rig.status().position < 0);
+  rig.send(CommandType::Stop);
+  rig.run(kStopFrames, [](int64_t) { return 0.0f; });
+
+  // The layer ends exactly at the Stop press with its punch-out fade, even
+  // though its last 20 frames arrived after the press.
+  std::vector<float> buf(static_cast<size_t>(kBar));
+  CHECK(rig.engine.exportLoop(0, buf.data(), kBar) == kBar);
+  CHECK(std::fabs(buf[1500] - 0.75f) < 1e-6f);
+  CHECK(std::fabs(buf[1990] - 0.75f) < 1e-6f);
+  CHECK(buf[1999] < 0.6f && buf[1999] > 0.5f);  // fading out
+  CHECK(std::fabs(buf[2000] - 0.5f) < 1e-6f);   // base only from the press on
+}
+
 }  // namespace
 
 int main() {
@@ -450,6 +506,7 @@ int main() {
   testOverdubUndoRedo();
   testExportImport();
   testSeamCrossfade();
+  testStopFadesOut();
   if (failures) {
     std::printf("%d check(s) failed\n", failures);
     return 1;

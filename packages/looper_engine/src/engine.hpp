@@ -145,6 +145,8 @@ class Engine {
   void commitChunk(Track& t, size_t index);
   void writeOverdub(Track& t, int64_t musicalPos, float sample);
   void startTransport(int64_t position);
+  void beginStop();
+  void finishStop();
   void stopTransport();
   void finishOnStop(Track& t);
   bool anyTrackHoldsAudio() const;
@@ -195,6 +197,15 @@ class Engine {
   float clickDecay_ = 0.0f;
 
   int seamFrames_ = 0;
+
+  // Stopping: the output fades out over stopFadeFrames_ while the transport
+  // keeps running long enough for latency-delayed writes to land; commands
+  // wait in the queue meanwhile (see beginStop).
+  bool stopping_ = false;
+  int64_t stopPressPosition_ = 0;
+  int stopFadeFrames_ = 0;
+  int stopFrame_ = 0;
+  int64_t stopFramesLeft_ = 0;
   float gainSmoothing_ = 0.0f;
   float meterDecay_ = 0.0f;
   float inputPeaks_[kMaxInputs] = {};

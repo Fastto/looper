@@ -12,6 +12,8 @@
 - [ ] Overdub feedback (fade older layers as new ones go on)
 - [ ] Quantized mute/unmute (on next bar), optional
 - [x] Crossfade at the loop seam into the pre-roll (no clicks, downbeat untouched)
+- [x] Stop fades the output out and lets layers punch out cleanly
+- [ ] Fade out when clearing a track that is playing
 - [ ] Automatic latency calibration (loopback ping)
 - [ ] MIDI: foot-switch / controller mapping (MIDI learn)
 - [ ] Per-track pan, output routing

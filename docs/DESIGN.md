@@ -76,6 +76,14 @@ touched, so the attack of the first hit keeps its punch.
 Overdub layers need nothing extra: a layer that runs across the seam is
 recorded continuously in real time, and punch-in/out have their own fades.
 
+**Stop** doesn't cut the output dead either. The output fades out over
+10 ms (raised cosine), and the transport keeps running a little longer —
+the round-trip latency plus the punch fade — so that a layer ended by Stop
+still receives its latency-delayed tail and its punch-out fade. The
+recordings are then closed as of the moment Stop was pressed. The UI shows
+"stopped" at once; commands sent in those few tens of ms (Play, a new
+recording) wait in the queue and run right after.
+
 ### 3.4 Overdub and undo
 
 Overdub ("Layer") records on top of a playing loop. Unlike the first
