@@ -571,6 +571,21 @@ class LooperController extends ChangeNotifier {
   }
 }
 
+/// Beats left until an armed track starts recording (the count-in from a
+/// stopped transport, or the wait for the next bar while playing); null
+/// when nothing is waiting.
+int? beatsUntilRecording(EngineStatus s) {
+  if (!s.playing) return null;
+  int? wait;
+  for (final t in s.tracks) {
+    if (t.state == TrackState.armed && t.recStart > s.position) {
+      final frames = t.recStart - s.position;
+      if (wait == null || frames < wait) wait = frames;
+    }
+  }
+  return wait == null ? null : (wait / s.beatFrames).ceil();
+}
+
 /// Musical position derived from an engine snapshot.
 class BeatPosition {
   BeatPosition(EngineStatus s)

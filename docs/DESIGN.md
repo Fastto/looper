@@ -55,7 +55,7 @@ Each track has one big button. Tapping it does the "next obvious thing":
 ```
 
 * **EMPTY** — grey, shows "tap to record".
-* **ARMED** — blinking red; a ring shows the count-down to the next bar.
+* **ARMED** — blinking red; a ring shows the count-down to the next bar, and the top bar shows "Rec in 3, 2, 1" with red beat lamps (same as the count-in from a stopped transport).
 * **RECORDING** — solid red; the ring fills once per bar, bar count shown.
 * **PLAYING** — green; the ring is the loop's playhead; waveform shown.
 * **MUTED** — dimmed; keeps playing silently so it re-enters in phase.

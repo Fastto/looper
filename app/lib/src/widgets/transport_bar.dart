@@ -172,7 +172,8 @@ class BeatLamps extends StatelessWidget {
   Widget build(BuildContext context) {
     final s = status;
     final pos = BeatPosition(s);
-    final countIn = s.playing && s.position < 0;
+    // Red while counting down to a recording, like a count-in.
+    final countIn = beatsUntilRecording(s) != null;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -229,8 +230,10 @@ class _PositionReadout extends StatelessWidget {
     if (!s.playing) {
       text = 'Stopped';
       color = LooperColors.textSecondary;
-    } else if (s.position < 0) {
-      text = 'Count-in ${s.beatsPerBar - position.beatInBar}';
+    } else if (beatsUntilRecording(s) case final beats?) {
+      // Counting down to the bar where an armed track starts recording,
+      // whether from a stopped transport or while playing.
+      text = 'Rec in $beats';
       color = LooperColors.record;
     } else {
       text = 'Bar ${position.bar + 1}.${position.beatInBar + 1}';
