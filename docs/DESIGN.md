@@ -185,7 +185,52 @@ Real-time rules for the audio callback (enforced by review):
 `Engine` knows nothing about devices: tests drive `Engine::process()` with
 synthetic input and assert on sample positions (`packages/looper_engine/test_native`).
 
-## 7. Repository layout
+## 7. Sessions
+
+A session is everything on screen: tempo, time signature, per-track settings
+and the loops. There is **no Save button** — like a hardware looper, nothing
+you record is ever lost:
+
+* Changes are written to disk shortly after they happen. A loop is written
+  once it stops being recorded or layered (the engine reports a track as
+  `busy` until then, including the one loop cycle in which older layers are
+  merged).
+* Quitting the app, hiding it, switching sessions and changing the audio
+  device save first; changing the device then reloads the session.
+* On launch the last session is reopened.
+* A new session is only written once it holds a loop, so the list does not
+  fill with empty sessions.
+
+The sessions browser (folder button in the top bar) renames, duplicates,
+deletes and opens sessions.
+
+### On disk
+
+```
+<Application Support>/Sessions/2026-10-27_15-04-12/
+  session.json      tempo, time signature, track settings, loop lengths
+  track-1.wav       mono 32-bit float, the loop with its audible layer mixed in
+  track-3.wav
+```
+
+`session.json` (`"format": "looper-session"`, `"version": 1`) stores each loop
+length in **half-bars**, not frames, so a session recorded at 44.1 kHz loads
+exactly in time on a 48 kHz interface: the engine resamples each loop to
+`halfBars × bar / 2` frames. Undo history is not saved — layers are merged
+into the loop. Files are written to `*.tmp` and renamed, so a crash never
+leaves a half-written session. The WAV reader also accepts 16/24/32-bit PCM
+and stereo files (mixed to mono), which is the basis for importing samples.
+
+### Threading
+
+Export and import run on the UI thread without locks. They are safe because
+the UI thread is the only sender of commands: the engine compares the number
+of commands sent with the number the audio thread reports as applied, and a
+track's audio can otherwise only change while it is `busy`. An empty track's
+buffer is never touched by the audio thread; the `TrackLoad` command that
+follows an import publishes the written samples to it (release/acquire queue).
+
+## 8. Repository layout
 
 ```
 app/                         Flutter application (UI)

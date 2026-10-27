@@ -7,6 +7,7 @@ library;
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
@@ -49,6 +50,7 @@ class TrackStatus {
     required this.lengthMode,
     required this.layerState,
     required this.layerVersion,
+    required this.busy,
     required this.recStart,
     required this.recEnd,
     required this.length,
@@ -63,6 +65,7 @@ class TrackStatus {
     lengthMode: 0,
     layerState: LayerState.none,
     layerVersion: 0,
+    busy: false,
     recStart: 0,
     recEnd: -1,
     length: 0,
@@ -80,6 +83,9 @@ class TrackStatus {
 
   /// Changes whenever the loop's audio changes (new take, layer, undo/redo).
   final int layerVersion;
+
+  /// Audio is being written (recording, layering, merging): not exportable yet.
+  final bool busy;
 
   bool get overdubbing => layerState == LayerState.recording;
   bool get canUndo => layerState == LayerState.active || layerState == LayerState.recording;
@@ -248,6 +254,7 @@ class LooperEngine {
           lengthMode: t.length_mode,
           layerState: LayerState.values[t.layer_state.clamp(0, LayerState.values.length - 1)],
           layerVersion: t.layer_version,
+          busy: t.busy != 0,
           recStart: t.rec_start,
           recEnd: t.rec_end,
           length: t.length,
@@ -256,6 +263,42 @@ class LooperEngine {
         );
       }),
     );
+  }
+
+  /// Commands sent but not yet applied by the audio thread.
+  int get commandsPending => _bindings.looper_commands_pending();
+
+  /// Longest loop a track can hold, in frames (0 without a device).
+  int get maxLoopFrames => _bindings.looper_max_loop_frames();
+
+  /// The track's loop with its audible layer mixed in. Returns null while the
+  /// track is busy (try again shortly) and an empty list if it holds no loop.
+  Float32List? trackExport(int track) {
+    if (track < 0 || track >= maxTracks) return Float32List(0);
+    _bindings.looper_get_status(_status);
+    // At least 1 so a recording track still reports "busy" rather than empty.
+    final capacity = _status.ref.tracks[track].length.clamp(1, 1 << 40);
+    final buffer = calloc<Float>(capacity);
+    try {
+      final n = _bindings.looper_track_export(track, buffer, capacity);
+      if (n < 0) return null;
+      return Float32List.fromList(buffer.asTypedList(n));
+    } finally {
+      calloc.free(buffer);
+    }
+  }
+
+  /// Loads audio into an empty track, resampled to [targetFrames], playing in
+  /// time from bar 1. Returns 0 on success, -1 if busy, -2 for a bad length.
+  int trackImport(int track, Float32List data, int targetFrames) {
+    if (data.isEmpty) return -2;
+    final buffer = calloc<Float>(data.length);
+    try {
+      buffer.asTypedList(data.length).setAll(0, data);
+      return _bindings.looper_track_import(track, buffer, data.length, targetFrames);
+    } finally {
+      calloc.free(buffer);
+    }
   }
 
   /// Peak envelope of a playing track's loop, [bins] values in 0..1.

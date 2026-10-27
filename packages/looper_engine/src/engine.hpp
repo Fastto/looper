@@ -27,6 +27,7 @@ enum class CommandType : uint8_t {
   TrackVolume,
   TrackInput,
   TrackLengthMode,
+  TrackLoad,  // d = loop length; audio was written by importLoop()
 };
 
 struct Command {
@@ -53,7 +54,22 @@ class Engine {
   explicit Engine(const EngineConfig& config);
 
   // UI thread: queue a command. Returns false if the queue is full.
-  bool send(const Command& cmd) { return commands_.push(cmd); }
+  bool send(const Command& cmd) {
+    if (!commands_.push(cmd)) return false;
+    ++sent_;
+    return true;
+  }
+
+  // UI thread: commands not yet applied, according to the latest status.
+  int64_t commandsPending() { return static_cast<int64_t>(sent_) - status_.read().commands_handled; }
+
+  size_t capacity() const { return capacity_; }
+
+  // UI thread: flattened copy of a loop. Returns frames, 0 if none, -1 if busy.
+  int64_t exportLoop(int track, float* out, int64_t capacity);
+
+  // UI thread: loads audio into an empty track. 0 = ok, -1 busy, -2 bad length.
+  int importLoop(int track, const float* data, int64_t frames, int64_t targetFrames);
 
   // Audio thread: interleaved float buffers. `input` may be null.
   void process(const float* input, float* output, uint32_t frames);
@@ -106,11 +122,15 @@ class Engine {
     uint32_t floorGeneration = 0;  // older chunks hold stale audio
     std::vector<uint32_t> chunkGen;
     bool supersededActive[kGenerationHistory] = {};
+    int64_t uncommitted = 0;  // chunks of the loop not yet on the current generation
   };
 
   void handle(const Command& cmd);
   void tap(Track& t);
   void resetLayer(Track& t);
+  void beginPlaying(Track& t);
+  // Whether sample `i` of `layer` is audible (generation-aware, see commitChunk).
+  bool layerAudible(const Track& t, size_t i, LooperLayerState state) const;
   void startOverdub(Track& t);
   void stopOverdub(Track& t);
   void undo(Track& t);
@@ -134,6 +154,8 @@ class Engine {
 
   EngineConfig config_;
   SpscQueue<Command, 256> commands_;
+  uint64_t sent_ = 0;     // UI thread
+  int64_t handled_ = 0;   // audio thread, published in the status
   TripleBuffer<LooperStatus> status_;
 
   Track tracks_[kMaxTracks];

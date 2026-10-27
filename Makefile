@@ -8,7 +8,7 @@ DEVICE ?= macos
 export LANG := en_US.UTF-8
 
 .DEFAULT_GOAL := help
-.PHONY: help up release test test-engine analyze bindings clean
+.PHONY: help up release test test-engine test-dart test-integration analyze bindings clean
 
 help: ## Show available targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  make %-12s %s\n", $$1, $$2}'
@@ -20,12 +20,18 @@ release: ## Build a release Looper.app and open its folder
 	cd $(APP) && flutter build macos --release
 	open $(APP)/build/macos/Build/Products/Release
 
-test: test-engine analyze ## Run all checks
+test: test-engine analyze test-dart ## Run all checks (no audio hardware needed)
 
 test-engine: ## Build and run the C++ engine tests
 	cmake -S $(ENGINE)/test_native -B $(ENGINE)/build/test_native
 	cmake --build $(ENGINE)/build/test_native --target engine_test
 	$(ENGINE)/build/test_native/engine_test
+
+test-dart: ## Run the Dart unit tests (WAV, sessions)
+	cd $(APP) && flutter test
+
+test-integration: ## Record, save and reopen a session on the real audio device
+	cd $(APP) && flutter test integration_test -d macos
 
 analyze: ## Static analysis of the Dart code
 	cd $(ENGINE) && flutter pub get >/dev/null && dart analyze lib

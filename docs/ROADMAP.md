@@ -17,7 +17,8 @@
 - [ ] Per-track pan, output routing
 
 ## v0.3 — sessions
-- [ ] Save/load sessions (WAV + JSON), export stems and mixdown
+- [x] Sessions saved automatically (WAV + JSON), reopened on launch, sessions browser
+- [ ] Export stems and mixdown to a user-chosen folder
 - [ ] Import samples
 - [ ] Free-tempo mode: the first loop sets the tempo
 - [ ] Tempo change with time-stretching

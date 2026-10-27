@@ -24,6 +24,10 @@ instrument, and layer loops that are always in time.
 | **Layer** button (or hold the big button) | Overdub on top of the loop; tap again to finish |
 | Undo / redo arrows | Remove / restore the last layer of that track |
 | Bin icon | Clear the track |
+| Folder button (top bar) | Sessions: rename, new, duplicate, open, delete |
+
+Everything is **saved automatically** (WAV + JSON) and the last session
+reopens when you start the app — there is no Save button to forget.
 
 Keyboard: `1`–`8` tap track · `⌥`+`1`–`8` layer (overdub) · `⌘Z` / `⇧⌘Z`
 undo / redo layer · `Shift`+`1`–`8` clear · `Space` play/stop · `M` click
@@ -39,7 +43,9 @@ Requirements: Flutter 3.38+, Xcode, CocoaPods, CMake.
 make up
 ```
 
-Other tasks: `make test` (engine tests + analysis), `make release` (build
+Other tasks: `make test` (engine + Dart tests, analysis),
+`make test-integration` (records and reopens a session on your audio
+interface), `make release` (build
 `Looper.app`), `make` to list everything.
 
 On first launch macOS asks for microphone access, which the app needs to

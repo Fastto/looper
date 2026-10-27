@@ -3,12 +3,19 @@ import 'package:looper_engine/looper_engine.dart';
 
 import '../looper_controller.dart';
 import '../theme.dart';
+import 'sessions_sheet.dart';
 
 class TransportBar extends StatelessWidget {
-  const TransportBar({super.key, required this.controller, required this.onOpenSettings});
+  const TransportBar({
+    super.key,
+    required this.controller,
+    required this.onOpenSettings,
+    required this.onOpenSessions,
+  });
 
   final LooperController controller;
   final VoidCallback onOpenSettings;
+  final VoidCallback onOpenSessions;
 
   @override
   Widget build(BuildContext context) {
@@ -39,6 +46,7 @@ class TransportBar extends StatelessWidget {
           BeatLamps(status: s),
           _PositionReadout(status: s, position: pos),
           _MetronomeControl(controller: controller),
+          SessionButton(sessions: controller.sessions, onPressed: onOpenSessions),
           IconButton(tooltip: 'Audio settings', onPressed: onOpenSettings, icon: const Icon(Icons.tune)),
         ],
       ),

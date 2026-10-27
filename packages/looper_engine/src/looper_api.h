@@ -47,6 +47,7 @@ typedef struct LooperTrackStatus {
   int64_t rec_start;      // transport frame where the loop starts (bar line)
   int64_t rec_end;        // transport frame where recording ends, -1 = open
   int64_t length;         // loop length in frames (PLAYING only)
+  int32_t busy;           // audio is being written: export would be inconsistent
   float volume;
   float peak;             // output peak meter, 0..1+, decays over time
 } LooperTrackStatus;
@@ -66,6 +67,7 @@ typedef struct LooperStatus {
   int64_t position;         // transport frame; negative during count-in
   int64_t bar_frames;
   int64_t block_counter;    // increments every audio block (liveness)
+  int64_t commands_handled; // commands applied by the audio thread so far
   float metronome_volume;
   float input_peaks[LOOPER_MAX_INPUTS];
   LooperTrackStatus tracks[LOOPER_MAX_TRACKS];
@@ -126,6 +128,22 @@ LOOPER_EXPORT void looper_get_status(LooperStatus* out);
 // Fills `out` with `bins` peak values (0..1) of the track's loop.
 // Returns the number of bins written (0 if the track is not playing).
 LOOPER_EXPORT int32_t looper_get_waveform(int32_t track, float* out, int32_t bins);
+
+// --- sessions ----------------------------------------------------------------
+
+// Commands sent but not yet applied by the audio thread.
+LOOPER_EXPORT int32_t looper_commands_pending(void);
+// Longest loop a track can hold, in frames.
+LOOPER_EXPORT int64_t looper_max_loop_frames(void);
+// Copies a playing track's loop (with its audible layer mixed in) to `out`.
+// Returns the number of frames, 0 if the track holds no loop, or -1 if it is
+// busy (recording, layering, or commands pending): try again shortly.
+LOOPER_EXPORT int64_t looper_track_export(int32_t track, float* out, int64_t capacity);
+// Loads audio into an EMPTY track, resampled to `target_frames`, and starts
+// it playing in time (anchored to bar 1). Returns 0 on success, -1 if busy
+// (track not empty or commands pending), -2 if the length is invalid.
+LOOPER_EXPORT int32_t looper_track_import(int32_t track, const float* data, int64_t frames,
+                                          int64_t target_frames);
 
 #ifdef __cplusplus
 }

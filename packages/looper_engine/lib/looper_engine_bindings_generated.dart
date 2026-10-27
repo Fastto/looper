@@ -330,6 +330,72 @@ class LooperEngineBindings {
       >('looper_get_waveform');
   late final _looper_get_waveform = _looper_get_waveformPtr
       .asFunction<int Function(int, ffi.Pointer<ffi.Float>, int)>();
+
+  /// Commands sent but not yet applied by the audio thread.
+  int looper_commands_pending() {
+    return _looper_commands_pending();
+  }
+
+  late final _looper_commands_pendingPtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function()>>(
+        'looper_commands_pending',
+      );
+  late final _looper_commands_pending = _looper_commands_pendingPtr
+      .asFunction<int Function()>();
+
+  /// Longest loop a track can hold, in frames.
+  int looper_max_loop_frames() {
+    return _looper_max_loop_frames();
+  }
+
+  late final _looper_max_loop_framesPtr =
+      _lookup<ffi.NativeFunction<ffi.Int64 Function()>>(
+        'looper_max_loop_frames',
+      );
+  late final _looper_max_loop_frames = _looper_max_loop_framesPtr
+      .asFunction<int Function()>();
+
+  /// Copies a playing track's loop (with its audible layer mixed in) to `out`.
+  /// Returns the number of frames, 0 if the track holds no loop, or -1 if it is
+  /// busy (recording, layering, or commands pending): try again shortly.
+  int looper_track_export(int track, ffi.Pointer<ffi.Float> out, int capacity) {
+    return _looper_track_export(track, out, capacity);
+  }
+
+  late final _looper_track_exportPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int64 Function(ffi.Int32, ffi.Pointer<ffi.Float>, ffi.Int64)
+        >
+      >('looper_track_export');
+  late final _looper_track_export = _looper_track_exportPtr
+      .asFunction<int Function(int, ffi.Pointer<ffi.Float>, int)>();
+
+  /// Loads audio into an EMPTY track, resampled to `target_frames`, and starts
+  /// it playing in time (anchored to bar 1). Returns 0 on success, -1 if busy
+  /// (track not empty or commands pending), -2 if the length is invalid.
+  int looper_track_import(
+    int track,
+    ffi.Pointer<ffi.Float> data,
+    int frames,
+    int target_frames,
+  ) {
+    return _looper_track_import(track, data, frames, target_frames);
+  }
+
+  late final _looper_track_importPtr =
+      _lookup<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Int32,
+            ffi.Pointer<ffi.Float>,
+            ffi.Int64,
+            ffi.Int64,
+          )
+        >
+      >('looper_track_import');
+  late final _looper_track_import = _looper_track_importPtr
+      .asFunction<int Function(int, ffi.Pointer<ffi.Float>, int, int)>();
 }
 
 enum LooperTrackState {
@@ -412,6 +478,10 @@ final class LooperTrackStatus extends ffi.Struct {
   @ffi.Int64()
   external int length;
 
+  /// audio is being written: export would be inconsistent
+  @ffi.Int32()
+  external int busy;
+
   @ffi.Float()
   external double volume;
 
@@ -465,6 +535,10 @@ final class LooperStatus extends ffi.Struct {
   /// increments every audio block (liveness)
   @ffi.Int64()
   external int block_counter;
+
+  /// commands applied by the audio thread so far
+  @ffi.Int64()
+  external int commands_handled;
 
   @ffi.Float()
   external double metronome_volume;

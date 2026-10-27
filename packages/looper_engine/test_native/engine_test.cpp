@@ -303,6 +303,96 @@ void testOverdubUndoRedo() {
   CHECK(silent(15 * kBar + 500) && silent(15 * kBar + 1000) && silent(15 * kBar + 2000));
 }
 
+
+void testExportImport() {
+  std::printf("export flattens audible layers; import loads in time; busy is respected\n");
+  Rig rig;
+  rig.send(CommandType::Play);
+  rig.run(1, [](int64_t) { return 0.0f; });
+  const int64_t d0 = rig.deviceFrame - 1;
+  std::vector<int64_t> hits;
+  auto input = [&](int64_t d) {
+    for (int64_t m : hits) {
+      if (d == d0 + m) return 1.0f;
+    }
+    return 0.0f;
+  };
+  auto runTo = [&](int64_t t) { rig.run(t - rig.position(), input); };
+  std::vector<float> buf(static_cast<size_t>(rig.engine.capacity()));
+  auto exportTrack = [&](int track) {
+    return rig.engine.exportLoop(track, buf.data(), static_cast<int64_t>(buf.size()));
+  };
+
+  CHECK(exportTrack(0) == 0);  // empty
+  rig.send(CommandType::TrackLengthMode, 0, 2);
+  rig.send(CommandType::TrackTap, 0);
+  CHECK(exportTrack(0) == -1);  // commands pending
+  hits.push_back(1000);
+  runTo(kBar / 2);
+  CHECK(exportTrack(0) == -1);  // recording
+  runTo(kBar + 10);
+  CHECK(exportTrack(0) == kBar);
+  CHECK(std::fabs(buf[1000] - 1.0f) < 1e-6f && std::fabs(buf[2000]) < 1e-6f);
+
+  // Layer on 2000: busy while layering and until older chunks are merged.
+  runTo(2 * kBar);
+  rig.send(CommandType::TrackOverdub, 0);
+  hits.push_back(2 * kBar + 2000);
+  runTo(3 * kBar);
+  CHECK(exportTrack(0) == -1);
+  rig.send(CommandType::TrackOverdub, 0);
+  runTo(3 * kBar + 100);
+  CHECK(rig.status().tracks[0].busy == 0);  // a whole cycle passed while layering
+  CHECK(exportTrack(0) == kBar);
+  CHECK(std::fabs(buf[1000] - 1.0f) < 1e-6f && std::fabs(buf[2000] - 1.0f) < 1e-6f);
+
+  rig.send(CommandType::TrackUndo, 0);
+  runTo(3 * kBar + 200);
+  CHECK(exportTrack(0) == kBar);
+  CHECK(std::fabs(buf[1000] - 1.0f) < 1e-6f && std::fabs(buf[2000]) < 1e-6f);
+
+  // A new layer stopped with the transport inside its first cycle: chunks are
+  // left unmerged, and export must still see layer 1 (redone) plus layer 2.
+  rig.send(CommandType::TrackRedo, 0);
+  runTo(4 * kBar);
+  rig.send(CommandType::TrackOverdub, 0);
+  hits.push_back(4 * kBar + 500);
+  runTo(4 * kBar + 800);
+  rig.send(CommandType::Stop);
+  rig.run(1, input);
+  CHECK(rig.status().playing == 0);
+  CHECK(exportTrack(0) == kBar);
+  CHECK(std::fabs(buf[500] - 1.0f) < 1e-6f && std::fabs(buf[1000] - 1.0f) < 1e-6f &&
+        std::fabs(buf[2000] - 1.0f) < 1e-6f);
+
+  // Import into track 1: two bars with a hit on 3000, plays from bar 1.
+  std::vector<float> loop(static_cast<size_t>(2 * kBar), 0.0f);
+  loop[3000] = 0.5f;
+  CHECK(rig.engine.importLoop(0, loop.data(), 2 * kBar, 2 * kBar) == -1);  // not empty
+  CHECK(rig.engine.importLoop(1, loop.data(), 2 * kBar, 2 * kBar) == 0);
+  CHECK(rig.engine.importLoop(2, loop.data(), 2 * kBar, 2 * kBar) == -1);  // load pending
+  rig.run(1, input);
+  CHECK(rig.status().tracks[1].state == LOOPER_TRACK_PLAYING);
+  CHECK(rig.status().tracks[1].length == 2 * kBar);
+  CHECK(rig.status().tracks[1].layer_state == LOOPER_LAYER_NONE);
+  rig.send(CommandType::TrackMute, 0, 1);
+  rig.send(CommandType::Play);
+  rig.run(1, input);
+  const size_t base = rig.out.size() - 1;  // transport 0
+  rig.run(4 * kBar, [](int64_t) { return 0.0f; });
+  CHECK(std::fabs(rig.out[base + 3000] - 0.5f) < 1e-6f);
+  CHECK(std::fabs(rig.out[base + 2 * kBar + 3000] - 0.5f) < 1e-6f);
+
+  // Resampling: a 1-bar loop recorded at half the rate fills 1 bar here.
+  std::vector<float> half(static_cast<size_t>(kBar / 2), 0.25f);
+  CHECK(rig.engine.importLoop(2, half.data(), kBar / 2, kBar) == 0);
+  rig.run(1, [](int64_t) { return 0.0f; });
+  CHECK(rig.status().tracks[2].length == kBar);
+  CHECK(exportTrack(2) == kBar);
+  CHECK(std::fabs(buf[kBar - 1] - 0.25f) < 1e-6f);
+  CHECK(rig.engine.importLoop(3, half.data(), kBar / 2, 0) == -2);
+}
+
 }  // namespace
 
 int main() {
@@ -313,6 +403,7 @@ int main() {
   testMuteAndClear();
   testStopKeepsWholeBars();
   testOverdubUndoRedo();
+  testExportImport();
   if (failures) {
     std::printf("%d check(s) failed\n", failures);
     return 1;

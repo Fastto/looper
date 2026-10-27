@@ -1,3 +1,5 @@
+import 'dart:ui' show AppExitResponse;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -5,6 +7,7 @@ import 'package:looper_engine/looper_engine.dart';
 
 import 'looper_controller.dart';
 import 'theme.dart';
+import 'widgets/sessions_sheet.dart';
 import 'widgets/settings_sheet.dart';
 import 'widgets/track_card.dart';
 import 'widgets/transport_bar.dart';
@@ -20,6 +23,7 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin {
   late final Ticker _ticker;
+  late final AppLifecycleListener _lifecycle;
   final _focus = FocusNode();
 
   static const _digitKeys = [
@@ -39,10 +43,19 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   void initState() {
     super.initState();
     _ticker = createTicker((_) => _c.poll())..start();
+    // Never lose loops: save before the app quits or goes to the background.
+    _lifecycle = AppLifecycleListener(
+      onExitRequested: () async {
+        await _c.sessions.flush();
+        return AppExitResponse.exit;
+      },
+      onHide: _c.sessions.flush,
+    );
   }
 
   @override
   void dispose() {
+    _lifecycle.dispose();
     _ticker.dispose();
     _focus.dispose();
     super.dispose();
@@ -99,6 +112,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                   controller: _c,
                   onOpenSettings: () async {
                     await showSettingsSheet(context, _c);
+                    _focus.requestFocus();
+                  },
+                  onOpenSessions: () async {
+                    await showSessionsSheet(context, _c.sessions);
                     _focus.requestFocus();
                   },
                 ),

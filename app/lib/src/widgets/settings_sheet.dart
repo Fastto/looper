@@ -53,8 +53,8 @@ class SettingsSheet extends StatelessWidget {
               const Padding(
                 padding: EdgeInsets.only(bottom: 8),
                 child: Text(
-                  'Changing the device clears all loops.',
-                  style: TextStyle(color: LooperColors.downbeat),
+                  'Changing the device saves and reloads your loops (layers are merged, undo is reset).',
+                  style: TextStyle(color: LooperColors.textSecondary),
                 ),
               ),
             _Field(

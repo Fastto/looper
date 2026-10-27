@@ -1,7 +1,7 @@
 name: looper
 description: "Open-source live looper: record, layer and play loops in time."
 publish_to: 'none'
-version: 0.2.0
+version: 0.3.0
 
 environment:
   sdk: ^3.10.8
@@ -11,12 +11,15 @@ dependencies:
     sdk: flutter
   looper_engine:
     path: ../packages/looper_engine
+  path_provider: ^2.1.6
   shared_preferences: ^2.3.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  integration_test:
+    sdk: flutter
 
 flutter:
   uses-material-design: true

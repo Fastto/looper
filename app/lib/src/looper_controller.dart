@@ -1,8 +1,13 @@
+import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:looper_engine/looper_engine.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
+import 'session/session.dart';
+import 'session/session_manager.dart';
 
 /// Per-track settings owned by the UI (re-applied whenever the device reopens).
 class TrackSettings {
@@ -25,10 +30,20 @@ String lengthModeLabel(int halfBars) => switch (halfBars) {
 /// Bridges the native engine and the widgets. Widgets call actions; the
 /// home page calls [poll] once per frame to refresh [status].
 class LooperController extends ChangeNotifier {
-  LooperController({LooperEngine? engine}) : _engine = engine ?? LooperEngine();
+  /// [sessionsRoot] overrides where sessions are stored (tests).
+  LooperController({LooperEngine? engine, Directory? sessionsRoot})
+    : _engine = engine ?? LooperEngine(),
+      _sessionsRoot = sessionsRoot;
+
+  final Directory? _sessionsRoot;
 
   final LooperEngine _engine;
   SharedPreferences? _prefs;
+
+  /// The current session: autosave, restore, sessions browser.
+  late final SessionManager sessions = SessionManager(this, root: _sessionsRoot);
+
+  LooperEngine get engine => _engine;
 
   EngineStatus status = EngineStatus.idle;
   AudioDevices devices = const AudioDevices(capture: [], playback: []);
@@ -67,10 +82,12 @@ class LooperController extends ChangeNotifier {
     _open();
     started = true;
     notifyListeners();
+    await sessions.start();
   }
 
   @override
   void dispose() {
+    sessions.dispose();
     _engine.dispose();
     super.dispose();
   }
@@ -82,6 +99,7 @@ class LooperController extends ChangeNotifier {
     final next = _engine.status();
     // Without an open device the engine reports zeros; keep a sane grid.
     status = next.deviceRunning ? next : EngineStatus.idle;
+    if (_frame % 10 == 0) sessions.onPoll(status);
     notifyListeners();
   }
 
@@ -106,13 +124,60 @@ class LooperController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void selectDevices({String? capture, String? playback, int? buffer}) {
+  /// Reopens the audio device. The session is saved first and reloaded
+  /// afterwards, so loops survive a device or sample-rate change.
+  Future<void> selectDevices({String? capture, String? playback, int? buffer}) async {
     captureName = capture ?? captureName;
     playbackName = playback ?? playbackName;
     bufferFrames = buffer ?? bufferFrames;
     _save();
+    await sessions.flush();
     _waveforms.clear();
+    _layerHistory.clear();
     _open();
+    notifyListeners();
+    await sessions.reloadAfterDeviceChange();
+  }
+
+  /// Waits until the audio thread has applied every command sent so far.
+  Future<void> waitIdle({Duration timeout = const Duration(seconds: 1)}) async {
+    final deadline = DateTime.now().add(timeout);
+    while (_engine.commandsPending > 0 && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+  }
+
+  /// Stops, clears every track and applies session-level settings.
+  Future<void> resetForSession({
+    required double bpm,
+    required int beatsPerBar,
+    List<SessionTrack>? tracks,
+  }) async {
+    _engine.stop();
+    for (var i = 0; i < maxTracks; i++) {
+      _engine.trackClear(i);
+    }
+    this.bpm = bpm.clamp(40, 240).toDouble();
+    this.beatsPerBar = beatsPerBar;
+    _engine.setTempo(this.bpm, this.beatsPerBar);
+    if (tracks != null) {
+      for (var i = 0; i < maxTracks; i++) {
+        final t = i < tracks.length ? tracks[i] : const SessionTrack();
+        this.tracks[i]
+          ..volume = t.volume
+          ..input = t.input
+          ..lengthMode = t.lengthMode;
+        _engine
+          ..trackSetVolume(i, t.volume)
+          ..trackSetInput(i, t.input)
+          ..trackSetLengthMode(i, t.lengthMode);
+      }
+    }
+    _waveforms.clear();
+    _layerHistory.clear();
+    _save();
+    await waitIdle();
+    status = _engine.status();
     notifyListeners();
   }
 

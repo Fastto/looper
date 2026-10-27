@@ -333,4 +333,25 @@ int32_t looper_get_waveform(int32_t track, float* out, int32_t bins) {
   return s.engine->waveform(track, out, bins);
 }
 
+int32_t looper_commands_pending(void) {
+  auto& s = state();
+  return s.engine ? static_cast<int32_t>(s.engine->commandsPending()) : 0;
+}
+
+int64_t looper_max_loop_frames(void) {
+  auto& s = state();
+  return s.engine ? static_cast<int64_t>(s.engine->capacity()) : 0;
+}
+
+int64_t looper_track_export(int32_t track, float* out, int64_t capacity) {
+  auto& s = state();
+  return s.engine ? s.engine->exportLoop(track, out, capacity) : 0;
+}
+
+int32_t looper_track_import(int32_t track, const float* data, int64_t frames,
+                            int64_t target_frames) {
+  auto& s = state();
+  return s.engine ? s.engine->importLoop(track, data, frames, target_frames) : -1;
+}
+
 }  // extern "C"
