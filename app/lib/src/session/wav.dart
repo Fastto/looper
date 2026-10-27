@@ -21,8 +21,9 @@ const _formatPcm = 1;
 const _formatFloat = 3;
 const _formatExtensible = 0xFFFE;
 
-/// Encodes mono samples as a 32-bit float WAV (lossless for the engine).
-Uint8List encodeWavFloat32(Float32List samples, int sampleRate) {
+/// Encodes samples as a 32-bit float WAV (lossless for the engine).
+/// Multi-channel audio is interleaved in [samples].
+Uint8List encodeWavFloat32(Float32List samples, int sampleRate, {int channels = 1}) {
   const headerSize = 12 + 26 + 12 + 8; // RIFF + fmt (18) + fact + data header
   final dataSize = samples.length * 4;
   final bytes = ByteData(headerSize + dataSize);
@@ -49,15 +50,15 @@ Uint8List encodeWavFloat32(Float32List samples, int sampleRate) {
   tag('fmt ');
   u32(18);
   u16(_formatFloat);
-  u16(1); // channels
+  u16(channels);
   u32(sampleRate);
-  u32(sampleRate * 4); // byte rate
-  u16(4); // block align
+  u32(sampleRate * 4 * channels); // byte rate
+  u16(4 * channels); // block align
   u16(32); // bits per sample
   u16(0); // cbSize
   tag('fact');
   u32(4);
-  u32(samples.length);
+  u32(samples.length ~/ channels);
   tag('data');
   u32(dataSize);
   final out = bytes.buffer.asUint8List();

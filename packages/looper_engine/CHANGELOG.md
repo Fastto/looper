@@ -1,3 +1,10 @@
+## 0.5.0
+
+* Quantized mute/unmute (beat or bar) with late-press tolerance and cancel.
+* Per-track pan with a balance-style law; stereo output.
+* Overdub feedback, undoable (decay stored in the layer).
+* Latency calibration through a loopback: pulses + cross-correlation.
+
 ## 0.4.0
 
 * Loop seam crossfade: the last 8 ms fade into the audio played just before the downbeat.

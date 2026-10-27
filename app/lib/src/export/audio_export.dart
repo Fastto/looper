@@ -1,17 +1,21 @@
 import 'dart:io';
 import 'dart:isolate';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../session/wav.dart';
 
 /// One loop to export: its audio (one cycle) and how loud it plays.
 class ExportLoop {
-  const ExportLoop({required this.track, required this.audio, required this.gain});
+  const ExportLoop({required this.track, required this.audio, required this.gain, this.pan = 0});
 
   /// 0-based track index.
   final int track;
   final Float32List audio;
   final double gain;
+
+  /// -1 (left) .. 1 (right); used for the mix (stems stay mono).
+  final double pan;
 }
 
 /// Everything needed to write an export; plain data so it can cross isolates.
@@ -77,11 +81,19 @@ Float32List renderStem(Float32List loop, double gain, int frames) {
   return out;
 }
 
-Float32List mixDown(List<Float32List> stems, int frames) {
-  final out = Float32List(frames);
-  for (final stem in stems) {
+/// The engine's pan law: unity in the centre, the far side fades out.
+(double, double) panGains(double pan) =>
+    (pan <= 0 ? 1.0 : math.cos(pan * math.pi / 2), pan >= 0 ? 1.0 : math.cos(-pan * math.pi / 2));
+
+/// Stereo mix (interleaved L/R) of mono stems at their pans.
+Float32List mixDown(List<Float32List> stems, List<double> pans, int frames) {
+  final out = Float32List(frames * 2);
+  for (var s = 0; s < stems.length; s++) {
+    final stem = stems[s];
+    final (left, right) = panGains(pans[s]);
     for (var i = 0; i < frames && i < stem.length; i++) {
-      out[i] += stem[i];
+      out[2 * i] += stem[i] * left;
+      out[2 * i + 1] += stem[i] * right;
     }
   }
   return out;
@@ -105,9 +117,9 @@ ExportResult writeExport(ExportJob job) {
   dir.createSync(recursive: true);
 
   final files = <String>[];
-  void write(String name, Float32List samples) {
+  void write(String name, Float32List samples, {int channels = 1}) {
     final path = '${dir.path}/$name';
-    File(path).writeAsBytesSync(encodeWavFloat32(samples, job.sampleRate), flush: true);
+    File(path).writeAsBytesSync(encodeWavFloat32(samples, job.sampleRate, channels: channels), flush: true);
     files.add(path);
   }
 
@@ -120,6 +132,8 @@ ExportResult writeExport(ExportJob job) {
       write('$number Track ${loop.track + 1}.wav', stem);
     }
   }
-  if (job.mix) write('Mix.wav', mixDown(rendered, job.frames));
+  if (job.mix) {
+    write('Mix.wav', mixDown(rendered, [for (final l in job.loops) l.pan], job.frames), channels: 2);
+  }
   return ExportResult(folder: dir.path, files: files);
 }

@@ -309,6 +309,7 @@ class SessionManager extends ChangeNotifier {
             file: _savedAudio[i] != null ? _store!.trackFileName(i) : null,
             halfBars: _savedAudio[i] != null && halfBar > 0 ? (_savedLength[i] / halfBar).round() : 0,
             volume: _c.tracks[i].volume,
+            pan: _c.tracks[i].pan,
             muted: status.tracks[i].muted,
             input: _c.tracks[i].input,
             lengthMode: _c.tracks[i].lengthMode,

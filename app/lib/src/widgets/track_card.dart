@@ -58,30 +58,21 @@ class TrackCard extends StatelessWidget {
           ),
           Row(
             children: [
-              const Icon(Icons.volume_down, size: 16, color: LooperColors.textSecondary),
+              const Tooltip(
+                message: 'Volume',
+                child: Icon(Icons.volume_down, size: 16, color: LooperColors.textSecondary),
+              ),
               Expanded(
+                flex: 3,
                 child: Slider(
                   value: settings.volume,
                   max: 1.5,
                   onChanged: (v) => controller.setTrackVolume(index, v),
                 ),
               ),
-              Tooltip(
-                message: t.muted ? 'Unmute' : 'Mute',
-                child: IconButton(
-                  visualDensity: VisualDensity.compact,
-                  isSelected: t.muted,
-                  onPressed: t.state == TrackState.playing ? () => controller.toggleMute(index) : null,
-                  icon: Icon(t.muted ? Icons.volume_off : Icons.volume_up, size: 20),
-                ),
-              ),
-              Tooltip(
-                message: 'Clear (Shift+${index + 1})',
-                child: IconButton(
-                  visualDensity: VisualDensity.compact,
-                  onPressed: t.state == TrackState.empty ? null : () => controller.clearTrack(index),
-                  icon: const Icon(Icons.delete_outline, size: 20),
-                ),
+              Expanded(
+                flex: 2,
+                child: _PanSlider(controller: controller, index: index),
               ),
             ],
           ),
@@ -166,14 +157,19 @@ class _TrackView {
             loopPhase: s.playing ? phase : null,
           );
         }
+        final pending = t.pendingMute;
+        final grid = s.muteQuantize == 2 ? 'bar' : 'beat';
         return _TrackView(
           color: t.muted ? LooperColors.muted : LooperColors.play,
           progress: phase,
           label: bars(t.length),
-          sublabel: t.muted ? 'muted · tap to play' : 'tap to mute · hold to layer',
+          sublabel: pending != null
+              ? '${pending ? 'mutes' : 'plays'} on the $grid'
+              : (t.muted ? 'muted · tap to play' : 'tap to mute · hold to layer'),
           icon: t.muted ? Icons.volume_off : Icons.graphic_eq,
           active: !t.muted,
-          blink: false,
+          // A change waiting for the grid blinks with the beat.
+          blink: pending != null && (s.position / s.beatFrames) % 1 < 0.5,
           loopPhase: s.playing ? phase : null,
         );
     }
@@ -548,7 +544,53 @@ class _LayerControls extends StatelessWidget {
             icon: const Icon(Icons.redo, size: 20),
           ),
         ),
+        Tooltip(
+          message: t.muted ? 'Unmute' : 'Mute',
+          child: IconButton(
+            visualDensity: VisualDensity.compact,
+            isSelected: t.muted,
+            onPressed: t.state == TrackState.playing ? () => controller.toggleMute(index) : null,
+            icon: Icon(t.muted ? Icons.volume_off : Icons.volume_up, size: 20),
+          ),
+        ),
+        Tooltip(
+          message: 'Clear (Shift+${index + 1})',
+          child: IconButton(
+            visualDensity: VisualDensity.compact,
+            onPressed: t.state == TrackState.empty ? null : () => controller.clearTrack(index),
+            icon: const Icon(Icons.delete_outline, size: 20),
+          ),
+        ),
       ],
+    );
+  }
+}
+
+/// Pan from L to R; double-click (or double-tap) centres it.
+class _PanSlider extends StatelessWidget {
+  const _PanSlider({required this.controller, required this.index});
+
+  final LooperController controller;
+  final int index;
+
+  @override
+  Widget build(BuildContext context) {
+    final pan = controller.tracks[index].pan;
+    final label = pan.abs() < 0.01 ? 'C' : '${pan < 0 ? 'L' : 'R'}${(pan.abs() * 100).round()}';
+    return Tooltip(
+      message: 'Pan $label — double-click to centre',
+      child: GestureDetector(
+        onDoubleTap: () => controller.setTrackPan(index, 0),
+        child: Row(
+          children: [
+            const Text('L', style: TextStyle(fontSize: 11, color: LooperColors.textSecondary)),
+            Expanded(
+              child: Slider(value: pan, min: -1, onChanged: (v) => controller.setTrackPan(index, v)),
+            ),
+            const Text('R', style: TextStyle(fontSize: 11, color: LooperColors.textSecondary)),
+          ],
+        ),
+      ),
     );
   }
 }

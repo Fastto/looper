@@ -202,6 +202,56 @@ class LooperEngineBindings {
   late final _looper_set_latency_frames = _looper_set_latency_framesPtr
       .asFunction<void Function(int)>();
 
+  /// Mute/unmute of playing tracks waits for: 0 = nothing, 1 = beat, 2 = bar.
+  void looper_set_mute_quantize(int mode) {
+    return _looper_set_mute_quantize(mode);
+  }
+
+  late final _looper_set_mute_quantizePtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int32)>>(
+        'looper_set_mute_quantize',
+      );
+  late final _looper_set_mute_quantize = _looper_set_mute_quantizePtr
+      .asFunction<void Function(int)>();
+
+  /// How much of the existing loop survives each overdub pass (1 = all).
+  void looper_set_feedback(double feedback) {
+    return _looper_set_feedback(feedback);
+  }
+
+  late final _looper_set_feedbackPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Float)>>(
+        'looper_set_feedback',
+      );
+  late final _looper_set_feedback = _looper_set_feedbackPtr
+      .asFunction<void Function(double)>();
+
+  /// Plays test pulses and listens on `channel` (needs a loopback: a cable from
+  /// an output to that input, or a mic near the speakers). Transport must be stopped.
+  void looper_calibrate_start(int channel) {
+    return _looper_calibrate_start(channel);
+  }
+
+  late final _looper_calibrate_startPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int32)>>(
+        'looper_calibrate_start',
+      );
+  late final _looper_calibrate_start = _looper_calibrate_startPtr
+      .asFunction<void Function(int)>();
+
+  /// 1 = measured (round trip in *frames), 0 = still measuring or idle,
+  /// -1 = no clear pulses heard (no loopback, too quiet or too noisy).
+  int looper_calibrate_result(ffi.Pointer<ffi.Int32> frames) {
+    return _looper_calibrate_result(frames);
+  }
+
+  late final _looper_calibrate_resultPtr =
+      _lookup<ffi.NativeFunction<ffi.Int32 Function(ffi.Pointer<ffi.Int32>)>>(
+        'looper_calibrate_result',
+      );
+  late final _looper_calibrate_result = _looper_calibrate_resultPtr
+      .asFunction<int Function(ffi.Pointer<ffi.Int32>)>();
+
   /// The one-button action: record / stop recording / stop overdub / toggle mute.
   void looper_track_tap(int track) {
     return _looper_track_tap(track);
@@ -303,6 +353,17 @@ class LooperEngineBindings {
       );
   late final _looper_track_set_length_mode = _looper_track_set_length_modePtr
       .asFunction<void Function(int, int)>();
+
+  void looper_track_set_pan(int track, double pan) {
+    return _looper_track_set_pan(track, pan);
+  }
+
+  late final _looper_track_set_panPtr =
+      _lookup<ffi.NativeFunction<ffi.Void Function(ffi.Int32, ffi.Float)>>(
+        'looper_track_set_pan',
+      );
+  late final _looper_track_set_pan = _looper_track_set_panPtr
+      .asFunction<void Function(int, double)>();
 
   /// --- read back -------------------------------------------------------------
   void looper_get_status(ffi.Pointer<LooperStatus> out) {
@@ -482,6 +543,14 @@ final class LooperTrackStatus extends ffi.Struct {
   @ffi.Int32()
   external int busy;
 
+  /// -1 none, 0/1 = unmute/mute waiting for the grid
+  @ffi.Int32()
+  external int pending_mute;
+
+  /// -1 (left) .. 1 (right)
+  @ffi.Float()
+  external double pan;
+
   @ffi.Float()
   external double volume;
 
@@ -521,6 +590,18 @@ final class LooperStatus extends ffi.Struct {
   /// total round-trip compensation in frames
   @ffi.Int32()
   external int latency_frames;
+
+  /// 0 off, 1 beat, 2 bar
+  @ffi.Int32()
+  external int mute_quantize;
+
+  /// 0 idle, 1 measuring, 2 done
+  @ffi.Int32()
+  external int calibration;
+
+  /// overdub feedback, 0..1
+  @ffi.Float()
+  external double feedback;
 
   @ffi.Double()
   external double bpm;

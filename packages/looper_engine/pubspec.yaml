@@ -1,6 +1,6 @@
 name: looper_engine
 description: "Real-time looper audio engine: C++ core (miniaudio) with a Dart FFI API."
-version: 0.4.0
+version: 0.5.0
 publish_to: none
 homepage: https://github.com/Fastto/looper
 

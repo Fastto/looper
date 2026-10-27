@@ -66,7 +66,14 @@ void main() {
       beatsPerBar: 3,
       sampleRate: 48000,
       tracks: [
-        SessionTrack(file: store.trackFileName(0), halfBars: 4, volume: 0.6, muted: true, input: 1),
+        SessionTrack(
+          file: store.trackFileName(0),
+          halfBars: 4,
+          volume: 0.6,
+          pan: -0.5,
+          muted: true,
+          input: 1,
+        ),
         const SessionTrack(lengthMode: 2),
       ],
     );
@@ -87,6 +94,8 @@ void main() {
       expect(read.beatsPerBar, 3);
       expect(read.loopCount, 1);
       expect(read.tracks[0].muted, isTrue);
+      expect(read.tracks[0].pan, -0.5);
+      expect(read.tracks[1].pan, 0);
       expect(read.tracks[0].input, 1);
       expect(read.tracks[1].lengthMode, 2);
       expect(read.tracks[1].hasAudio, isFalse);

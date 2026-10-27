@@ -111,6 +111,12 @@ recording it is **not quantized**: it punches in and out the moment you
 press, with 4 ms fades so there are no clicks, and it may run over the loop
 as many times as you like. Latency is compensated the same way as recording.
 
+**Layer feedback** (Settings, 0–100 %, default 100 %) scales what is already
+in the loop on every pass while layering, so older parts fade away the
+longer you layer. The decay is written into the layer as a negative delta
+(`layer += fade × (input + (feedback − 1) × (base + layer))`) rather than
+into the base, so undo still restores the loop exactly as it was.
+
 Each track keeps its newest layer apart from the rest of the loop, which
 gives one level of **undo / redo** per track (like a loop-station pedal):
 
@@ -155,6 +161,21 @@ audio into the loop shifted back by that round-trip, so loops land exactly
 on the grid. On macOS the round-trip is read from CoreAudio (device + stream
 latency, safety offset, buffer size); a manual offset (ms) in Settings lets
 you fine-tune it.
+
+**Measure latency** (Settings → Timing) finds the real round trip: with a
+cable from an output to an input (or a mic near the speakers), the engine
+plays 8 short windowed 2 kHz bursts 300 ms apart and records the chosen
+input. Each burst is located by cross-correlation with its known shape; a
+burst counts only if its peak stands well above the correlation noise, and
+at least 5 must agree within 1 ms. The median is the round trip, and
+**Apply** sets the offset to what the system report was missing.
+
+### 3.2.1 Quantized mute
+
+With *Quantize mute* set to Beat or Bar, muting or unmuting a playing track
+waits for the next beat or bar line (the button blinks meanwhile), so parts
+drop in and out in time. The same late-press tolerance as recording
+applies, and pressing again before the line cancels the change.
 
 ## 4. Metronome
 

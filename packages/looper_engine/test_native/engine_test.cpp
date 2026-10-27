@@ -31,7 +31,8 @@ constexpr int64_t kStopFrames = 64;
 struct Rig {
   Engine engine;
   int64_t deviceFrame = 0;
-  std::vector<float> out;  // mono copy of everything rendered
+  std::vector<float> out;   // left channel of everything rendered
+  std::vector<float> outR;  // right channel
 
   explicit Rig(int64_t latency = 0) : engine(makeConfig()) {
     send(CommandType::SetTempo, 0, 4, 60.0);
@@ -65,6 +66,7 @@ struct Rig {
       float o[2] = {0.0f, 0.0f};
       engine.process(in, o, 1);
       out.push_back(o[0]);
+      outR.push_back(o[1]);
       ++deviceFrame;
     }
   }
@@ -587,6 +589,136 @@ void testNoClicksAnywhere() {
   CHECK(std::fabs(click.out[mark + 59]) < 1e-3f);
 }
 
+
+void testQuantizedMute() {
+  std::printf("quantized mute waits for the bar/beat, forgives late presses, can be cancelled\n");
+  Rig rig;
+  rig.send(CommandType::Play);
+  rig.run(1, [](int64_t) { return 0.0f; });
+  auto steady = [](int64_t) { return 0.8f; };
+  auto runTo = [&](int64_t t) { rig.run(t - rig.position(), steady); };
+  rig.send(CommandType::TrackLengthMode, 0, 2);
+  rig.send(CommandType::TrackTap, 0);
+  runTo(kBar + 10);
+  rig.send(CommandType::SetMuteQuantize, 0, 2);  // bar
+
+  runTo(kBar + 1500);
+  rig.send(CommandType::TrackMute, 0, 1);
+  runTo(kBar + 1600);
+  CHECK(rig.status().tracks[0].pending_mute == 1);
+  CHECK(rig.status().tracks[0].muted == 0);
+  CHECK(std::fabs(rig.out.back() - 0.8f) < 1e-6f);  // still playing
+  runTo(2 * kBar + 100);
+  CHECK(rig.status().tracks[0].muted == 1);
+  CHECK(rig.status().tracks[0].pending_mute == -1);
+  CHECK(std::fabs(rig.out.back()) < 1e-3f);
+
+  // Late press (100 frames after the bar line, tolerance 250): right away.
+  runTo(3 * kBar + 100);
+  rig.send(CommandType::TrackTap, 0);
+  rig.run(1, steady);
+  CHECK(rig.status().tracks[0].muted == 0);
+  CHECK(rig.status().tracks[0].pending_mute == -1);
+
+  // Beat mode, and cancelling: tap twice before the beat leaves it playing.
+  rig.send(CommandType::SetMuteQuantize, 0, 1);
+  runTo(3 * kBar + 1500);
+  rig.send(CommandType::TrackTap, 0);
+  rig.run(1, steady);
+  CHECK(rig.status().tracks[0].pending_mute == 1);
+  rig.send(CommandType::TrackTap, 0);
+  rig.run(1, steady);
+  CHECK(rig.status().tracks[0].pending_mute == -1);
+  runTo(3 * kBar + 2100);
+  CHECK(rig.status().tracks[0].muted == 0);
+  // ...and once more, well past the tolerance: mutes on the next beat (3 * kBar + 3000).
+  runTo(3 * kBar + 2500);
+  rig.send(CommandType::TrackTap, 0);
+  runTo(3 * kBar + 2990);
+  CHECK(rig.status().tracks[0].muted == 0);
+  runTo(3 * kBar + 3010);
+  CHECK(rig.status().tracks[0].muted == 1);
+}
+
+void testPan() {
+  std::printf("pan: unity in the centre, the far side fades out\n");
+  Rig rig;
+  rig.send(CommandType::TrackLengthMode, 0, 2);
+  rig.send(CommandType::TrackTap, 0);
+  rig.run(2 * kBar + 10, [](int64_t) { return 0.8f; });
+  CHECK(std::fabs(rig.out.back() - 0.8f) < 1e-6f && std::fabs(rig.outR.back() - 0.8f) < 1e-6f);
+  rig.send(CommandType::TrackPan, 0, 0, -1.0);
+  rig.run(100, [](int64_t) { return 0.0f; });
+  CHECK(std::fabs(rig.out.back() - 0.8f) < 1e-6f);
+  CHECK(std::fabs(rig.outR.back()) < 1e-3f);
+  rig.send(CommandType::TrackPan, 0, 0, 0.5);
+  rig.run(100, [](int64_t) { return 0.0f; });
+  CHECK(std::fabs(rig.out.back() - 0.8f * 0.70710678f) < 1e-3f);
+  CHECK(std::fabs(rig.outR.back() - 0.8f) < 1e-6f);
+  CHECK(rig.status().tracks[0].pan == 0.5f);
+}
+
+void testOverdubFeedback() {
+  std::printf("overdub feedback decays the loop each pass; undo restores it\n");
+  Rig rig;
+  rig.send(CommandType::Play);
+  rig.run(1, [](int64_t) { return 0.0f; });
+  auto runTo = [&](int64_t t, float in) { rig.run(t - rig.position(), [in](int64_t) { return in; }); };
+  rig.send(CommandType::TrackLengthMode, 0, 2);
+  rig.send(CommandType::TrackTap, 0);
+  runTo(2 * kBar, 0.8f);
+  rig.send(CommandType::SetFeedback, 0, 0, 0.5);
+  rig.send(CommandType::TrackOverdub, 0);
+  runTo(4 * kBar, 0.0f);  // two silent passes
+  rig.send(CommandType::TrackOverdub, 0);
+  runTo(4 * kBar + 20, 0.0f);
+  CHECK(rig.status().feedback == 0.5f);
+  std::vector<float> buf(static_cast<size_t>(kBar));
+  CHECK(rig.engine.exportLoop(0, buf.data(), kBar) == kBar);
+  CHECK(std::fabs(buf[2000] - 0.2f) < 1e-6f);  // 0.8 * 0.5 * 0.5
+  rig.send(CommandType::TrackUndo, 0);
+  runTo(4 * kBar + 40, 0.0f);
+  CHECK(rig.engine.exportLoop(0, buf.data(), kBar) == kBar);
+  CHECK(std::fabs(buf[2000] - 0.8f) < 1e-6f);
+  rig.send(CommandType::TrackRedo, 0);
+  runTo(4 * kBar + 60, 0.0f);
+  CHECK(rig.engine.exportLoop(0, buf.data(), kBar) == kBar);
+  CHECK(std::fabs(buf[2000] - 0.2f) < 1e-6f);
+}
+
+void testLatencyCalibration() {
+  std::printf("calibration finds the round trip through a loopback\n");
+  const int64_t roundTrip = 37;
+  Rig rig;
+  uint32_t noise = 12345;
+  auto loopback = [&](int64_t d) {
+    noise = noise * 1664525u + 1013904223u;
+    const float hiss = (static_cast<float>(noise >> 8) / 16777216.0f - 0.5f) * 0.01f;
+    const auto i = static_cast<size_t>(d - roundTrip);
+    return (d >= roundTrip && i < rig.out.size() ? rig.out[i] * 0.3f : 0.0f) + hiss;
+  };
+  int32_t frames = -1;
+  CHECK(rig.engine.calibrationResult(&frames) == 0);  // nothing yet
+  rig.send(CommandType::CalibrationStart, 0, 0);
+  rig.run(100, loopback);
+  CHECK(rig.status().calibration == 1);
+  rig.run(4000, loopback);
+  CHECK(rig.status().calibration == 2);
+  CHECK(rig.engine.calibrationResult(&frames) == 1);
+  CHECK(frames == roundTrip);
+
+  // Without a loopback there is nothing to find.
+  rig.send(CommandType::CalibrationStart, 0, 0);
+  rig.run(4100, [&](int64_t) { return 0.0f; });
+  CHECK(rig.engine.calibrationResult(&frames) == -1);
+
+  // Refused while playing.
+  rig.send(CommandType::Play);
+  rig.send(CommandType::CalibrationStart, 0, 0);
+  rig.run(10, [](int64_t) { return 0.0f; });
+  CHECK(rig.status().calibration == 2);  // unchanged, not measuring
+}
+
 }  // namespace
 
 int main() {
@@ -601,6 +733,10 @@ int main() {
   testSeamCrossfade();
   testStopFadesOut();
   testNoClicksAnywhere();
+  testQuantizedMute();
+  testPan();
+  testOverdubFeedback();
+  testLatencyCalibration();
   if (failures) {
     std::printf("%d check(s) failed\n", failures);
     return 1;

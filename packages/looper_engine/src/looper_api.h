@@ -48,6 +48,8 @@ typedef struct LooperTrackStatus {
   int64_t rec_end;        // transport frame where recording ends, -1 = open
   int64_t length;         // loop length in frames (PLAYING only)
   int32_t busy;           // audio is being written: export would be inconsistent
+  int32_t pending_mute;   // -1 none, 0/1 = unmute/mute waiting for the grid
+  float pan;              // -1 (left) .. 1 (right)
   float volume;
   float peak;             // output peak meter, 0..1+, decays over time
 } LooperTrackStatus;
@@ -63,6 +65,9 @@ typedef struct LooperStatus {
   int32_t monitoring_on;
   int32_t count_in_bars;
   int32_t latency_frames;   // total round-trip compensation in frames
+  int32_t mute_quantize;    // 0 off, 1 beat, 2 bar
+  int32_t calibration;      // 0 idle, 1 measuring, 2 done
+  float feedback;           // overdub feedback, 0..1
   double bpm;
   int64_t position;         // transport frame; negative during count-in
   int64_t bar_frames;
@@ -106,6 +111,19 @@ LOOPER_EXPORT void looper_set_metronome(int32_t on, float volume);
 LOOPER_EXPORT void looper_set_monitoring(int32_t on);
 LOOPER_EXPORT void looper_set_count_in(int32_t bars);
 LOOPER_EXPORT void looper_set_latency_frames(int32_t frames);
+// Mute/unmute of playing tracks waits for: 0 = nothing, 1 = beat, 2 = bar.
+LOOPER_EXPORT void looper_set_mute_quantize(int32_t mode);
+// How much of the existing loop survives each overdub pass (1 = all).
+LOOPER_EXPORT void looper_set_feedback(float feedback);
+
+// --- latency calibration ------------------------------------------------------
+
+// Plays test pulses and listens on `channel` (needs a loopback: a cable from
+// an output to that input, or a mic near the speakers). Transport must be stopped.
+LOOPER_EXPORT void looper_calibrate_start(int32_t channel);
+// 1 = measured (round trip in *frames), 0 = still measuring or idle,
+// -1 = no clear pulses heard (no loopback, too quiet or too noisy).
+LOOPER_EXPORT int32_t looper_calibrate_result(int32_t* frames);
 
 // --- tracks ----------------------------------------------------------------
 
@@ -121,6 +139,7 @@ LOOPER_EXPORT void looper_track_set_muted(int32_t track, int32_t muted);
 LOOPER_EXPORT void looper_track_set_volume(int32_t track, float volume);
 LOOPER_EXPORT void looper_track_set_input(int32_t track, int32_t channel);
 LOOPER_EXPORT void looper_track_set_length_mode(int32_t track, int32_t half_bars);
+LOOPER_EXPORT void looper_track_set_pan(int32_t track, float pan);
 
 // --- read back -------------------------------------------------------------
 

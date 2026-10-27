@@ -5,6 +5,7 @@ class SessionTrack {
     this.file,
     this.halfBars = 0,
     this.volume = 0.8,
+    this.pan = 0,
     this.muted = false,
     this.input = 0,
     this.lengthMode = 0,
@@ -14,6 +15,7 @@ class SessionTrack {
     file: json['file'] as String?,
     halfBars: (json['halfBars'] as num?)?.toInt() ?? 0,
     volume: (json['volume'] as num?)?.toDouble() ?? 0.8,
+    pan: (json['pan'] as num?)?.toDouble() ?? 0,
     muted: json['muted'] as bool? ?? false,
     input: (json['input'] as num?)?.toInt() ?? 0,
     lengthMode: (json['lengthMode'] as num?)?.toInt() ?? 0,
@@ -25,6 +27,9 @@ class SessionTrack {
   /// Loop length in half-bars, so it survives sample-rate changes exactly.
   final int halfBars;
   final double volume;
+
+  /// -1 (left) .. 1 (right).
+  final double pan;
   final bool muted;
   final int input;
   final int lengthMode;
@@ -35,6 +40,7 @@ class SessionTrack {
     'file': file,
     'halfBars': halfBars,
     'volume': volume,
+    'pan': pan,
     'muted': muted,
     'input': input,
     'lengthMode': lengthMode,

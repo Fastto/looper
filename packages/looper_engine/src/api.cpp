@@ -281,6 +281,30 @@ void looper_set_latency_frames(int32_t frames) {
   sendCommand(looper::CommandType::SetLatency, [&](looper::Command& c) { c.i = frames; });
 }
 
+void looper_set_mute_quantize(int32_t mode) {
+  sendCommand(looper::CommandType::SetMuteQuantize, [&](looper::Command& c) { c.i = mode; });
+}
+
+void looper_set_feedback(float feedback) {
+  sendCommand(looper::CommandType::SetFeedback, [&](looper::Command& c) { c.d = feedback; });
+}
+
+void looper_calibrate_start(int32_t channel) {
+  sendCommand(looper::CommandType::CalibrationStart, [&](looper::Command& c) { c.i = channel; });
+}
+
+int32_t looper_calibrate_result(int32_t* frames) {
+  auto& s = state();
+  return s.engine ? s.engine->calibrationResult(frames) : 0;
+}
+
+void looper_track_set_pan(int32_t track, float pan) {
+  sendCommand(looper::CommandType::TrackPan, [&](looper::Command& c) {
+    c.track = track;
+    c.d = pan;
+  });
+}
+
 void looper_track_tap(int32_t track) {
   sendCommand(looper::CommandType::TrackTap, [&](looper::Command& c) { c.track = track; });
 }

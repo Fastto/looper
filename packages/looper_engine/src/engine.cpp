@@ -50,6 +50,19 @@ Engine::Engine(const EngineConfig& config) : config_(config) {
 
   stopFadeFrames_ = std::max(1, static_cast<int>(std::lround(kStopFadeSeconds * sr)));
   startFadeFrames_ = std::max(1, static_cast<int>(std::lround(kStartFadeSeconds * sr)));
+
+  // Calibration: 8 short windowed 2 kHz bursts, 300 ms apart, after 200 ms.
+  calLead_ = static_cast<int64_t>(0.2 * sr);
+  calInterval_ = static_cast<int64_t>(0.3 * sr);
+  const int pulseLen = std::max(8, static_cast<int>(std::lround(0.0015 * sr)));
+  const double pulseFreq = std::min(2000.0, sr / 4.0);
+  calPulse_.resize(static_cast<size_t>(pulseLen));
+  for (int i = 0; i < pulseLen; ++i) {
+    const double hann = 0.5 - 0.5 * std::cos(2.0 * 3.14159265358979 * i / (pulseLen - 1));
+    calPulse_[static_cast<size_t>(i)] =
+        static_cast<float>(std::sin(2.0 * 3.14159265358979 * pulseFreq * i / sr) * hann);
+  }
+  calCapture_.assign(static_cast<size_t>(calLead_ + calInterval_ * (kCalPulses + 1)), 0.0f);
   seamFrames_ = std::clamp(static_cast<int>(std::lround(kSeamFadeSeconds * sr)), 1, kMaxSeamFrames);
   gainSmoothing_ = 1.0f - std::exp(-1.0f / (0.005f * static_cast<float>(sr)));
   meterDecay_ = std::exp(-1.0f / (0.3f * static_cast<float>(sr)));
@@ -138,7 +151,24 @@ void Engine::handle(const Command& cmd) {
       if (t) redo(*t);
       break;
     case CommandType::TrackMute:
-      if (t) t->muted = cmd.i != 0;
+      if (t) requestMute(*t, cmd.i != 0);
+      break;
+    case CommandType::TrackPan:
+      if (t) t->pan = std::clamp(static_cast<float>(cmd.d), -1.0f, 1.0f);
+      break;
+    case CommandType::SetMuteQuantize:
+      muteQuantize_ = std::clamp(cmd.i, 0, 2);
+      if (muteQuantize_ == 0) applyPendingMutes();
+      break;
+    case CommandType::SetFeedback:
+      feedback_ = std::clamp(static_cast<float>(cmd.d), 0.0f, 1.0f);
+      break;
+    case CommandType::CalibrationStart:
+      if (!playing_ && calState_ != 1) {
+        calChannel_ = std::clamp(cmd.i, 0, std::max(std::min(config_.inputChannels, kMaxInputs) - 1, 0));
+        calPos_ = 0;
+        calState_ = 1;
+      }
       break;
     case CommandType::TrackVolume:
       if (t) t->volume = std::clamp(static_cast<float>(cmd.d), 0.0f, 2.0f);
@@ -196,9 +226,47 @@ void Engine::tap(Track& t) {
       if (t.overdubbing) {
         stopOverdub(t);
       } else {
-        t.muted = !t.muted;
+        requestMute(t, !(t.pendingMute >= 0 ? t.pendingMute != 0 : t.muted));
       }
       break;
+  }
+}
+
+// Mute/unmute right away, or on the next beat/bar when quantized. A late
+// press (within the timing tolerance after the line) still counts as on it,
+// and asking again for the current state cancels a pending change.
+void Engine::requestMute(Track& t, bool muted) {
+  if (muted == t.muted) {
+    t.pendingMute = -1;
+    return;
+  }
+  if (!playing_ || stopping_ || muteQuantize_ == 0 || t.state != LOOPER_TRACK_PLAYING) {
+    t.muted = muted;
+    t.pendingMute = -1;
+    return;
+  }
+  const int64_t p = position_;
+  int64_t lastLine;
+  if (muteQuantize_ == 2) {
+    lastLine = floorDiv(p, bar_) * bar_;
+  } else {
+    const int64_t beat = floorDiv(p * beatsPerBar_, bar_);
+    lastLine = floorDiv(beat * bar_ + beatsPerBar_ - 1, beatsPerBar_);  // first frame of that beat
+  }
+  if (p - lastLine <= tolerance_) {
+    t.muted = muted;
+    t.pendingMute = -1;
+  } else {
+    t.pendingMute = muted ? 1 : 0;
+  }
+}
+
+void Engine::applyPendingMutes() {
+  for (auto& t : tracks_) {
+    if (t.pendingMute >= 0) {
+      t.muted = t.pendingMute != 0;
+      t.pendingMute = -1;
+    }
   }
 }
 
@@ -231,6 +299,7 @@ void Engine::startOverdub(Track& t) {
   t.layerState = LOOPER_LAYER_RECORDING;
   t.layerGain = 1.0f;
   t.muted = false;
+  t.pendingMute = -1;
   t.overdubbing = true;
   t.odWriting = true;
   t.odStart = position_;
@@ -306,7 +375,10 @@ void Engine::writeOverdub(Track& t, int64_t musicalPos, float sample) {
   if (t.odEnd >= 0) fade = std::min(fade, static_cast<float>(t.odEnd - musicalPos) / fadeFrames);
   const size_t idx = static_cast<size_t>(floorMod(musicalPos - t.recStart, t.length));
   commitChunk(t, idx);
-  t.layer[idx] += sample * fade;
+  // Feedback: each pass scales what is already there. The decay lives in the
+  // layer as a (negative) delta, so undo still brings back the original.
+  const float existing = t.buffer[idx] + t.layer[idx];
+  t.layer[idx] += fade * (sample + (feedback_ - 1.0f) * existing);
 }
 
 void Engine::startTransport(int64_t position) {
@@ -325,6 +397,7 @@ void Engine::clearTrack(Track& t) {
   t.muted = false;
   t.clearFadeLeft = 0;
   t.fadeInLeft = 0;
+  t.pendingMute = -1;
   resetLayer(t);
 }
 
@@ -356,6 +429,7 @@ void Engine::finishStop() {
   stopping_ = false;
   position_ = stopPressPosition_;
   clickEnv_ = 0.0f;
+  applyPendingMutes();
   stopTransport();
 }
 
@@ -423,7 +497,8 @@ void Engine::processFrame(const float* in, float* out) {
   }
   auto inputSample = [&](int ch) { return (in && ch < usable) ? in[ch] : 0.0f; };
 
-  float mix = 0.0f;
+  float mixL = 0.0f;
+  float mixR = 0.0f;
   float monitor = 0.0f;
   uint32_t monitoredChannels = 0;
 
@@ -432,6 +507,13 @@ void Engine::processFrame(const float* in, float* out) {
     const int64_t musical = p - latency_;
     const int64_t maxLen =
         std::max<int64_t>(static_cast<int64_t>(capacity_) / bar_ * bar_, bar_ / 2);
+
+    const int64_t beat = floorDiv(p * beatsPerBar_, bar_);
+    const bool newBeat = beat != lastBeat_;
+    if (newBeat && muteQuantize_ != 0 &&
+        (muteQuantize_ == 1 || floorMod(beat, beatsPerBar_) == 0)) {
+      applyPendingMutes();
+    }
 
     for (auto& t : tracks_) {
       if (t.state == LOOPER_TRACK_ARMED && p >= t.recStart) t.state = LOOPER_TRACK_RECORDING;
@@ -464,7 +546,13 @@ void Engine::processFrame(const float* in, float* out) {
           clearNow = --t.clearFadeLeft == 0;
         }
         const float s = (t.buffer[idx] + t.layer[idx] * t.layerGain) * t.gain * envelope;
-        mix += s;
+        // Balance-style pan law: unity at the centre, the far side fades out.
+        const float targetL = t.pan <= 0.0f ? 1.0f : std::cos(t.pan * kHalfPi);
+        const float targetR = t.pan >= 0.0f ? 1.0f : std::cos(-t.pan * kHalfPi);
+        t.panL += (targetL - t.panL) * gainSmoothing_;
+        t.panR += (targetR - t.panR) * gainSmoothing_;
+        mixL += s * t.panL;
+        mixR += s * t.panR;
         t.peak = std::max(std::fabs(s), t.peak * meterDecay_);
         if (clearNow) clearTrack(t);
       } else {
@@ -476,8 +564,7 @@ void Engine::processFrame(const float* in, float* out) {
       if (monitoring_ && live) monitoredChannels |= 1u << t.inputChannel;
     }
 
-    const int64_t beat = floorDiv(p * beatsPerBar_, bar_);
-    if (beat != lastBeat_) {
+    if (newBeat) {
       lastBeat_ = beat;
       clickFreq_ = floorMod(beat, beatsPerBar_) == 0 ? 1760.0f : 1175.0f;
       clickEnv_ = 1.0f;
@@ -504,9 +591,27 @@ void Engine::processFrame(const float* in, float* out) {
                  : 0.0f;
     ++stopFrame_;
   }
-  const float left = (mix + monitor + click) * master;
-  if (config_.outputChannels >= 1) out[0] = left;
-  if (config_.outputChannels >= 2) out[1] = left;
+  float left = (mixL + monitor + click) * master;
+  float right = (mixR + monitor + click) * master;
+
+  // Calibration replaces the output with test pulses and records the input.
+  if (calState_ == 1) {
+    const int64_t sincePulse = calPos_ - calLead_;
+    float pulse = 0.0f;
+    if (sincePulse >= 0 && sincePulse < calInterval_ * kCalPulses) {
+      const int64_t k = sincePulse % calInterval_;
+      if (k < static_cast<int64_t>(calPulse_.size())) pulse = 0.5f * calPulse_[static_cast<size_t>(k)];
+    }
+    left = right = pulse;
+    calCapture_[static_cast<size_t>(calPos_)] = inputSample(calChannel_);
+    if (++calPos_ >= static_cast<int64_t>(calCapture_.size())) calState_ = 2;
+  }
+
+  if (config_.outputChannels == 1) out[0] = 0.5f * (left + right);
+  if (config_.outputChannels >= 2) {
+    out[0] = left;
+    out[1] = right;
+  }
   for (int ch = 2; ch < config_.outputChannels; ++ch) out[ch] = 0.0f;
   ++deviceFrame_;
   if (stopping_ && --stopFramesLeft_ <= 0) finishStop();
@@ -589,6 +694,9 @@ void Engine::publishStatus() {
   s.monitoring_on = monitoring_ ? 1 : 0;
   s.count_in_bars = countInBars_;
   s.latency_frames = static_cast<int32_t>(latency_);
+  s.mute_quantize = muteQuantize_;
+  s.calibration = calState_;
+  s.feedback = feedback_;
   s.bpm = bpm_;
   s.position = position_;
   s.bar_frames = bar_;
@@ -612,6 +720,8 @@ void Engine::publishStatus() {
                (playing_ && t.uncommitted > 0 && t.layerState != LOOPER_LAYER_NONE))
                   ? 1
                   : 0;
+    ts.pending_mute = t.pendingMute;
+    ts.pan = t.pan;
     ts.volume = t.volume;
     ts.peak = t.peak;
   }
@@ -659,6 +769,45 @@ int64_t Engine::exportLoop(int track, float* out, int64_t capacity) {
     out[k] = t.buffer[i] + (layerAudible(t, i, layerState) ? t.layer[i] : 0.0f);
   }
   return len;
+}
+
+// Finds each pulse in the captured input by cross-correlating with the pulse
+// shape; the round trip is the median delay of the clearly detected ones.
+int Engine::calibrationResult(int32_t* frames) {
+  if (status_.read().calibration != 2) return 0;
+  const int64_t n = static_cast<int64_t>(calPulse_.size());
+  const int64_t maxLag = calInterval_ - n;
+  std::vector<int64_t> lags;
+  for (int k = 0; k < kCalPulses; ++k) {
+    const int64_t start = calLead_ + k * calInterval_;
+    double best = 0.0;
+    double sumSq = 0.0;
+    int64_t bestLag = -1;
+    for (int64_t lag = 0; lag < maxLag; ++lag) {
+      double c = 0.0;
+      const float* x = calCapture_.data() + start + lag;
+      for (int64_t i = 0; i < n; ++i) c += static_cast<double>(x[i]) * calPulse_[static_cast<size_t>(i)];
+      sumSq += c * c;
+      if (std::fabs(c) > best) {
+        best = std::fabs(c);
+        bestLag = lag;
+      }
+    }
+    const double rms = std::sqrt(sumSq / static_cast<double>(maxLag));
+    if (bestLag >= 0 && best > 1e-4 && best > 6.0 * rms) lags.push_back(bestLag);
+  }
+  if (lags.size() < 5) return -1;
+  std::sort(lags.begin(), lags.end());
+  const int64_t median = lags[lags.size() / 2];
+  // The detected pulses must agree within 1 ms, or it was noise.
+  const int64_t spread = std::max<int64_t>(2, config_.sampleRate / 1000);
+  int agreeing = 0;
+  for (int64_t lag : lags) {
+    if (std::llabs(lag - median) <= spread) ++agreeing;
+  }
+  if (agreeing < 5) return -1;
+  if (frames) *frames = static_cast<int32_t>(median);
+  return 1;
 }
 
 int Engine::importLoop(int track, const float* data, int64_t frames, int64_t targetFrames) {

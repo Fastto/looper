@@ -9,14 +9,15 @@
 
 ## v0.2 — playing live
 - [x] Overdub (record on top of a playing loop) with one-level undo/redo per track
-- [ ] Overdub feedback (fade older layers as new ones go on)
-- [ ] Quantized mute/unmute (on next bar), optional
+- [x] Overdub feedback (fade older layers as new ones go on)
+- [x] Quantized mute/unmute (next beat or bar), optional
 - [x] Crossfade at the loop seam into the pre-roll (no clicks, downbeat untouched)
 - [x] Stop fades the output out and lets layers punch out cleanly
 - [x] No clicks anywhere: fades on clear, loop start, monitoring, click mute, device change and quit
-- [ ] Automatic latency calibration (loopback ping)
+- [x] Automatic latency calibration (loopback pulses + cross-correlation)
 - [ ] MIDI: foot-switch / controller mapping (MIDI learn)
-- [ ] Per-track pan, output routing
+- [x] Per-track pan (stereo output, stereo mix export)
+- [ ] Output routing to more than two channels
 
 ## v0.3 — sessions
 - [x] Sessions saved automatically (WAV + JSON), reopened on launch, sessions browser

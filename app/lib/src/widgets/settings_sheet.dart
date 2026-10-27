@@ -102,6 +102,8 @@ class SettingsSheet extends StatelessWidget {
             _InputMeters(peaks: s.inputPeaks),
             const Divider(height: 32),
             Text('Timing', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            _CalibrationPanel(controller: c),
             const SizedBox(height: 4),
             Text(
               'Recordings are shifted back by the round-trip latency so they land on the grid. '
@@ -141,6 +143,44 @@ class SettingsSheet extends StatelessWidget {
                 ],
                 selected: {c.countInBars},
                 onSelectionChanged: (v) => c.setCountIn(v.first),
+              ),
+            ),
+            _Field(
+              label: 'Quantize mute',
+              child: SegmentedButton<int>(
+                segments: const [
+                  ButtonSegment(value: 0, label: Text('Off')),
+                  ButtonSegment(value: 1, label: Text('Beat')),
+                  ButtonSegment(value: 2, label: Text('Bar')),
+                ],
+                selected: {c.muteQuantize},
+                onSelectionChanged: (v) => c.setMuteQuantize(v.first),
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.only(left: 120, bottom: 4),
+              child: Text(
+                'Mute / unmute waits for the next beat or bar, so tracks drop in and out in time.',
+                style: TextStyle(fontSize: 12, color: LooperColors.textSecondary),
+              ),
+            ),
+            _Field(
+              label: 'Layer feedback',
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Slider(value: c.feedback, divisions: 20, onChanged: c.setFeedback),
+                  ),
+                  SizedBox(width: 48, child: Text('${(c.feedback * 100).round()}%')),
+                ],
+              ),
+            ),
+            const Padding(
+              padding: EdgeInsets.only(left: 120, bottom: 4),
+              child: Text(
+                'How much of the loop survives each pass while you layer. 100% keeps everything; '
+                'lower lets older parts fade away. Undo brings them back.',
+                style: TextStyle(fontSize: 12, color: LooperColors.textSecondary),
               ),
             ),
             SwitchListTile(
@@ -239,5 +279,97 @@ class _InputMeters extends StatelessWidget {
           ),
       ],
     );
+  }
+}
+
+/// Measures the real round trip through a loopback and applies it.
+class _CalibrationPanel extends StatefulWidget {
+  const _CalibrationPanel({required this.controller});
+
+  final LooperController controller;
+
+  @override
+  State<_CalibrationPanel> createState() => _CalibrationPanelState();
+}
+
+class _CalibrationPanelState extends State<_CalibrationPanel> {
+  int _channel = 0;
+  double? _measuredMs;
+  String? _error;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.controller;
+    final inputs = c.status.inputChannels;
+    final channel = _channel.clamp(0, (inputs - 1).clamp(0, 63));
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(color: LooperColors.surfaceHigh, borderRadius: BorderRadius.circular(10)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Measure latency', style: TextStyle(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 4),
+          const Text(
+            'Connect an output of your interface to an input with a cable (or hold a mic close to '
+            'the speakers), turn the input gain up a little, then press Measure. You will hear 8 short beeps.',
+            style: TextStyle(fontSize: 12, color: LooperColors.textSecondary),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              DropdownButton<int>(
+                value: channel,
+                onChanged: c.calibrating ? null : (v) => setState(() => _channel = v!),
+                items: [
+                  for (var i = 0; i < (inputs < 1 ? 1 : inputs); i++)
+                    DropdownMenuItem(value: i, child: Text('Listen on In ${i + 1}')),
+                ],
+              ),
+              FilledButton.tonalIcon(
+                onPressed: c.calibrating || !c.status.deviceRunning ? null : () => _measure(channel),
+                icon: c.calibrating
+                    ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.graphic_eq),
+                label: Text(c.calibrating ? 'Measuring…' : 'Measure'),
+              ),
+              if (_measuredMs != null) ...[
+                Text('Round trip: ${_measuredMs!.toStringAsFixed(1)} ms'),
+                FilledButton(
+                  onPressed: () {
+                    c.applyMeasuredLatency(_measuredMs!);
+                    setState(() => _measuredMs = null);
+                  },
+                  child: const Text('Apply'),
+                ),
+              ],
+            ],
+          ),
+          if (_error != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(_error!, style: const TextStyle(color: LooperColors.record, fontSize: 12)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _measure(int channel) async {
+    setState(() {
+      _error = null;
+      _measuredMs = null;
+    });
+    try {
+      final ms = await widget.controller.measureLatency(channel);
+      if (mounted) setState(() => _measuredMs = ms);
+    } on StateError catch (e) {
+      if (mounted) {
+        setState(() => _error = 'Could not measure: ${e.message}. Check the loopback and the input level.');
+      }
+    }
   }
 }

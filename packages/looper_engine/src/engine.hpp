@@ -29,6 +29,10 @@ enum class CommandType : uint8_t {
   TrackInput,
   TrackLengthMode,
   TrackLoad,  // d = loop length; audio was written by importLoop()
+  TrackPan,
+  SetMuteQuantize,
+  SetFeedback,
+  CalibrationStart,
 };
 
 struct Command {
@@ -71,6 +75,9 @@ class Engine {
 
   // UI thread: loads audio into an empty track. 0 = ok, -1 busy, -2 bad length.
   int importLoop(int track, const float* data, int64_t frames, int64_t targetFrames);
+
+  // UI thread: result of the last calibration (see looper_calibrate_result).
+  int calibrationResult(int32_t* frames);
 
   // Audio thread: interleaved float buffers. `input` may be null.
   void process(const float* input, float* output, uint32_t frames);
@@ -115,6 +122,10 @@ class Engine {
     bool muted = false;
     float volume = 1.0f;
     float gain = 0.0f;
+    float pan = 0.0f;
+    float panL = 1.0f;  // smoothed channel gains for `pan`
+    float panR = 1.0f;
+    int pendingMute = -1;  // quantized mute waiting for the next beat/bar
     float peak = 0.0f;
 
     // overdub
@@ -138,6 +149,8 @@ class Engine {
   void handle(const Command& cmd);
   void tap(Track& t);
   void resetLayer(Track& t);
+  void requestMute(Track& t, bool muted);
+  void applyPendingMutes();
   void clearTrack(Track& t);
   bool deferCommands() const;
   void beginPlaying(Track& t);
@@ -211,6 +224,18 @@ class Engine {
   int stopFadeFrames_ = 0;
   int startFadeFrames_ = 0;
   float monitorGain_[kMaxInputs] = {};
+  int muteQuantize_ = 0;
+  float feedback_ = 1.0f;
+
+  // Latency calibration: pulses out, input captured, analysed on the UI thread.
+  int calState_ = 0;  // 0 idle, 1 measuring, 2 done
+  int calChannel_ = 0;
+  int64_t calPos_ = 0;
+  int64_t calLead_ = 0;
+  int64_t calInterval_ = 0;
+  static constexpr int kCalPulses = 8;
+  std::vector<float> calPulse_;
+  std::vector<float> calCapture_;
   float metronomeGain_ = 0.0f;
   int stopFrame_ = 0;
   int64_t stopFramesLeft_ = 0;

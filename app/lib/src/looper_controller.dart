@@ -12,11 +12,12 @@ import 'session/session_manager.dart';
 
 /// Per-track settings owned by the UI (re-applied whenever the device reopens).
 class TrackSettings {
-  TrackSettings({this.input = 0, this.lengthMode = 0, this.volume = 0.8});
+  TrackSettings({this.input = 0, this.lengthMode = 0, this.volume = 0.8, this.pan = 0});
 
   int input;
   int lengthMode;
   double volume;
+  double pan;
 }
 
 /// Allowed fixed loop lengths, in half-bars. 0 = auto.
@@ -62,6 +63,12 @@ class LooperController extends ChangeNotifier {
   double metronomeVolume = 0.5;
   bool monitoring = false;
   int countInBars = 1;
+
+  /// Mute/unmute waits for: 0 = nothing, 1 = beat, 2 = bar.
+  int muteQuantize = 0;
+
+  /// Share of the loop that survives each overdub pass (1 = everything).
+  double feedback = 1;
   final List<TrackSettings> tracks = List.generate(maxTracks, (_) => TrackSettings());
 
   final Map<int, (int, List<double>)> _waveforms = {};
@@ -181,7 +188,9 @@ class LooperController extends ChangeNotifier {
         if (t.state == TrackState.empty || (t.muted && !includeMuted)) break;
         final audio = t.state == TrackState.playing ? _engine.trackExport(i) : null;
         if (audio != null) {
-          if (audio.isNotEmpty) loops.add(ExportLoop(track: i, audio: audio, gain: tracks[i].volume));
+          if (audio.isNotEmpty) {
+            loops.add(ExportLoop(track: i, audio: audio, gain: tracks[i].volume, pan: tracks[i].pan));
+          }
           break;
         }
         if (DateTime.now().isAfter(deadline)) break;
@@ -209,10 +218,12 @@ class LooperController extends ChangeNotifier {
         final t = i < tracks.length ? tracks[i] : const SessionTrack();
         this.tracks[i]
           ..volume = t.volume
+          ..pan = t.pan
           ..input = t.input
           ..lengthMode = t.lengthMode;
         _engine
           ..trackSetVolume(i, t.volume)
+          ..trackSetPan(i, t.pan)
           ..trackSetInput(i, t.input)
           ..trackSetLengthMode(i, t.lengthMode);
       }
@@ -243,13 +254,16 @@ class LooperController extends ChangeNotifier {
       ..setTempo(bpm, beatsPerBar)
       ..setMetronome(on: metronomeOn, volume: metronomeVolume)
       ..setMonitoring(monitoring)
-      ..setCountIn(countInBars);
+      ..setCountIn(countInBars)
+      ..setMuteQuantize(muteQuantize)
+      ..setFeedback(feedback);
     _applyLatency();
     for (var i = 0; i < maxTracks; i++) {
       _engine
         ..trackSetInput(i, tracks[i].input)
         ..trackSetLengthMode(i, tracks[i].lengthMode)
-        ..trackSetVolume(i, tracks[i].volume);
+        ..trackSetVolume(i, tracks[i].volume)
+        ..trackSetPan(i, tracks[i].pan);
     }
   }
 
@@ -324,6 +338,56 @@ class LooperController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setMuteQuantize(int mode) {
+    muteQuantize = mode;
+    _engine.setMuteQuantize(mode);
+    _save();
+    notifyListeners();
+  }
+
+  void setFeedback(double value) {
+    feedback = value.clamp(0, 1).toDouble();
+    _engine.setFeedback(feedback);
+    _save();
+    notifyListeners();
+  }
+
+  // ---------------------------------------------------------------- calibration
+
+  bool calibrating = false;
+
+  /// Measures the round trip through a loopback on [channel] and returns it
+  /// in milliseconds. Throws [StateError] if nothing clear was heard.
+  Future<double> measureLatency(int channel) async {
+    if (calibrating) throw StateError('already measuring');
+    calibrating = true;
+    notifyListeners();
+    try {
+      await stopAndSettle();
+      _engine.calibrateStart(channel);
+      await waitIdle();
+      final deadline = DateTime.now().add(const Duration(seconds: 6));
+      while (DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        final frames = _engine.calibrateResult(); // throws if nothing was heard
+        if (frames != null && !_engine.status().calibrating) {
+          return frames / status.sampleRate * 1000;
+        }
+      }
+      throw StateError('measurement timed out');
+    } finally {
+      calibrating = false;
+      notifyListeners();
+    }
+  }
+
+  /// Uses a measured round trip: the offset becomes whatever the system
+  /// report was missing.
+  void applyMeasuredLatency(double ms) {
+    final reportedMs = reportedLatencyFrames / status.sampleRate * 1000;
+    setLatencyOffsetMs((ms - reportedMs).roundToDouble());
+  }
+
   // ---------------------------------------------------------------- tracks
 
   void tapTrack(int i) => _engine.trackTap(i);
@@ -373,6 +437,13 @@ class LooperController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void setTrackPan(int i, double pan) {
+    tracks[i].pan = pan.clamp(-1, 1).toDouble();
+    _engine.trackSetPan(i, tracks[i].pan);
+    _save();
+    notifyListeners();
+  }
+
   void setTrackInput(int i, int channel) {
     tracks[i].input = channel;
     _engine.trackSetInput(i, channel);
@@ -401,8 +472,11 @@ class LooperController extends ChangeNotifier {
     metronomeVolume = p.getDouble('metronomeVolume') ?? metronomeVolume;
     monitoring = p.getBool('monitoring') ?? monitoring;
     countInBars = p.getInt('countInBars') ?? countInBars;
+    muteQuantize = p.getInt('muteQuantize') ?? muteQuantize;
+    feedback = p.getDouble('feedback') ?? feedback;
     for (var i = 0; i < maxTracks; i++) {
       tracks[i]
+        ..pan = p.getDouble('track$i.pan') ?? 0
         ..input = p.getInt('track$i.input') ?? 0
         ..lengthMode = p.getInt('track$i.lengthMode') ?? 0
         ..volume = p.getDouble('track$i.volume') ?? 0.8;
@@ -423,9 +497,12 @@ class LooperController extends ChangeNotifier {
       ..setBool('metronomeOn', metronomeOn)
       ..setDouble('metronomeVolume', metronomeVolume)
       ..setBool('monitoring', monitoring)
-      ..setInt('countInBars', countInBars);
+      ..setInt('countInBars', countInBars)
+      ..setInt('muteQuantize', muteQuantize)
+      ..setDouble('feedback', feedback);
     for (var i = 0; i < maxTracks; i++) {
       p
+        ..setDouble('track$i.pan', tracks[i].pan)
         ..setInt('track$i.input', tracks[i].input)
         ..setInt('track$i.lengthMode', tracks[i].lengthMode)
         ..setDouble('track$i.volume', tracks[i].volume);

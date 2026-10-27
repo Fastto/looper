@@ -51,6 +51,8 @@ class TrackStatus {
     required this.layerState,
     required this.layerVersion,
     required this.busy,
+    required this.pendingMute,
+    required this.pan,
     required this.recStart,
     required this.recEnd,
     required this.length,
@@ -66,6 +68,8 @@ class TrackStatus {
     layerState: LayerState.none,
     layerVersion: 0,
     busy: false,
+    pendingMute: null,
+    pan: 0,
     recStart: 0,
     recEnd: -1,
     length: 0,
@@ -86,6 +90,12 @@ class TrackStatus {
 
   /// Audio is being written (recording, layering, merging): not exportable yet.
   final bool busy;
+
+  /// A quantized mute (true) or unmute (false) waiting for the next beat/bar.
+  final bool? pendingMute;
+
+  /// -1 (left) .. 1 (right).
+  final double pan;
 
   bool get overdubbing => layerState == LayerState.recording;
   bool get canUndo => layerState == LayerState.active || layerState == LayerState.recording;
@@ -115,6 +125,9 @@ class EngineStatus {
     required this.monitoringOn,
     required this.countInBars,
     required this.latencyFrames,
+    required this.muteQuantize,
+    required this.calibrating,
+    required this.feedback,
     required this.bpm,
     required this.position,
     required this.barFrames,
@@ -134,6 +147,9 @@ class EngineStatus {
     monitoringOn: false,
     countInBars: 1,
     latencyFrames: 0,
+    muteQuantize: 0,
+    calibrating: false,
+    feedback: 1,
     bpm: 120,
     position: 0,
     barFrames: 96000,
@@ -152,6 +168,11 @@ class EngineStatus {
   final bool monitoringOn;
   final int countInBars;
   final int latencyFrames;
+
+  /// 0 = off, 1 = beat, 2 = bar.
+  final int muteQuantize;
+  final bool calibrating;
+  final double feedback;
   final double bpm;
 
   /// Transport position in frames; negative during the count-in.
@@ -215,6 +236,25 @@ class LooperEngine {
   void setMonitoring(bool on) => _bindings.looper_set_monitoring(on ? 1 : 0);
   void setCountIn(int bars) => _bindings.looper_set_count_in(bars);
   void setLatencyFrames(int frames) => _bindings.looper_set_latency_frames(frames);
+  void setMuteQuantize(int mode) => _bindings.looper_set_mute_quantize(mode);
+  void setFeedback(double feedback) => _bindings.looper_set_feedback(feedback);
+
+  /// Starts measuring the round-trip latency through a loopback on [channel].
+  void calibrateStart(int channel) => _bindings.looper_calibrate_start(channel);
+
+  /// The measured round trip in frames once done; null while measuring or
+  /// idle. Throws [StateError] if no clear pulses were heard.
+  int? calibrateResult() {
+    final frames = calloc<Int32>();
+    try {
+      final result = _bindings.looper_calibrate_result(frames);
+      if (result == 1) return frames.value;
+      if (result < 0) throw StateError('no clear test pulses were heard');
+      return null;
+    } finally {
+      calloc.free(frames);
+    }
+  }
 
   void trackTap(int track) => _bindings.looper_track_tap(track);
   void trackClear(int track) => _bindings.looper_track_clear(track);
@@ -224,6 +264,7 @@ class LooperEngine {
   void trackSetMuted(int track, bool muted) => _bindings.looper_track_set_muted(track, muted ? 1 : 0);
   void trackSetVolume(int track, double volume) => _bindings.looper_track_set_volume(track, volume);
   void trackSetInput(int track, int channel) => _bindings.looper_track_set_input(track, channel);
+  void trackSetPan(int track, double pan) => _bindings.looper_track_set_pan(track, pan);
   void trackSetLengthMode(int track, int halfBars) => _bindings.looper_track_set_length_mode(track, halfBars);
 
   EngineStatus status() {
@@ -240,6 +281,9 @@ class LooperEngine {
       monitoringOn: s.monitoring_on != 0,
       countInBars: s.count_in_bars,
       latencyFrames: s.latency_frames,
+      muteQuantize: s.mute_quantize,
+      calibrating: s.calibration == 1,
+      feedback: s.feedback,
       bpm: s.bpm,
       position: s.position,
       barFrames: s.bar_frames,
@@ -255,6 +299,8 @@ class LooperEngine {
           layerState: LayerState.values[t.layer_state.clamp(0, LayerState.values.length - 1)],
           layerVersion: t.layer_version,
           busy: t.busy != 0,
+          pendingMute: t.pending_mute < 0 ? null : t.pending_mute != 0,
+          pan: t.pan,
           recStart: t.rec_start,
           recEnd: t.rec_end,
           length: t.length,

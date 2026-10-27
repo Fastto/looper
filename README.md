@@ -23,6 +23,7 @@ instrument, and layer loops that are always in time.
 | Tap a playing track | Mute / unmute (it keeps running in time) |
 | **Layer** button (or hold the big button) | Overdub on top of the loop; tap again to finish |
 | Undo / redo arrows | Remove / restore the last layer of that track |
+| L–R slider | Pan the track (double-click to centre) |
 | Bin icon | Clear the track |
 | Folder button (top bar) | Sessions: rename, new, duplicate, open, delete |
 | **Export audio…** (or `⌘E`) | Stems and a mix as WAV, aligned from bar 1, into a folder you choose |
@@ -35,6 +36,10 @@ undo / redo layer · `⌘E` export · `Shift`+`1`–`8` clear · `Space` play/st
 on/off · `T` tap tempo.
 
 Tempo and time signature are locked while any track holds audio.
+
+In **Audio settings**: quantize mute to the beat or bar, set how much of the
+loop survives each layer pass (feedback), and **Measure latency** with a
+loopback cable for perfectly timed recordings.
 
 ## Build & run (macOS)
 

@@ -21,10 +21,17 @@ void main() {
     expect(renderStem(loop, 0.5, 7), [0.5, 0, -0.5, 0.5, 0, -0.5, 0.5]);
   });
 
-  test('mix is the sum of the stems', () {
+  test('mix is the stereo sum of the stems at their pans', () {
     final a = Float32List.fromList([0.25, 0.25, 0.25]);
     final b = Float32List.fromList([0.5, -0.25, 0]);
-    expect(mixDown([a, b], 3), [0.75, 0, 0.25]);
+    // a centred, b hard left.
+    expect(mixDown([a, b], [0, -1], 3), [0.75, 0.25, 0, 0.25, 0.25, 0.25]);
+  });
+
+  test('pan law matches the engine: unity in the centre', () {
+    expect(panGains(0), (1.0, 1.0));
+    expect(panGains(1).$1, closeTo(0, 1e-12));
+    expect(panGains(-0.5).$2, closeTo(0.70710678, 1e-6));
   });
 
   test('file names are safe', () {
@@ -42,7 +49,7 @@ void main() {
       frames: 8,
       loops: [
         ExportLoop(track: 0, audio: Float32List.fromList([1, 0]), gain: 1),
-        ExportLoop(track: 2, audio: Float32List.fromList([0, 0, 0, 0.5]), gain: 0.5),
+        ExportLoop(track: 2, audio: Float32List.fromList([0, 0, 0, 0.5]), gain: 0.5, pan: 1),
       ],
       stems: stems,
       mix: mix,
@@ -54,8 +61,11 @@ void main() {
     final stem3 = decodeWav(await File(first.files[1]).readAsBytes());
     expect(stem3.sampleRate, 48000);
     expect(stem3.samples, [0, 0, 0, 0.25, 0, 0, 0, 0.25]);
-    final mix = decodeWav(await File(first.files[2]).readAsBytes());
-    expect(mix.samples, [1, 0, 1, 0.25, 1, 0, 1, 0.25]);
+    final mixBytes = await File(first.files[2]).readAsBytes();
+    expect(ByteData.sublistView(mixBytes).getUint16(22, Endian.little), 2); // stereo
+    // Track 3 is hard right: L = track 1 only, R = both; decoding averages L/R.
+    final mix = decodeWav(mixBytes);
+    expect(mix.samples, [1, 0, 1, 0.125, 1, 0, 1, 0.125]);
 
     final second = writeExport(job(stems: false));
     expect(second.folder, '${dir.path}/Jam - 120 BPM (2)');

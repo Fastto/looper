@@ -1,7 +1,7 @@
 name: looper
 description: "Open-source live looper: record, layer and play loops in time."
 publish_to: 'none'
-version: 0.4.0
+version: 0.5.0
 
 environment:
   sdk: ^3.10.8
